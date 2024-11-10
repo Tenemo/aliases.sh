@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "author": "piotr@piech.dev",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "highlight.js": "^11.10.0"
   },
