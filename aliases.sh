@@ -1,9 +1,6 @@
 # Default location on Windows: C:\Program Files\Git\etc\profile.d\aliases.sh
 # I left the default content in place
 
-# Some good standards, which are not used if the user
-# creates his/her own .bashrc/.bash_profile
-
 # Alias to list aliases. It's aliases all the way down.
 alias aliases="grep '^alias' 'C:/Program Files/Git/etc/profile.d/aliases.sh' | cut -d ' ' -f 2-"
 
