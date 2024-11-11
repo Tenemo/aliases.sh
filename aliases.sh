@@ -4,6 +4,49 @@
 # Alias to list aliases. It's aliases all the way down.
 alias aliases="grep '^alias' 'C:/Program Files/Git/etc/profile.d/aliases.sh' | cut -d ' ' -f 2-"
 
+# For working with LLMs
+concatenate() {
+    DIRECTORY_TO_SEARCH="./"
+    OUTPUT_FILE="concatenated.txt"
+    if [ -f "$OUTPUT_FILE" ]; then
+        rm "$OUTPUT_FILE"
+    fi
+    EXCLUDED_DIRECTORIES=("node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github")
+    EXCLUDED_FILES=("$OUTPUT_FILE" "package-lock.json" "LICENSE" ".gitignore")
+    EXCLUDED_FILE_EXTENSIONS=("jpg" "jpeg" "JPG" "JPEG" "png" "PNG")
+    FIND_EXCLUSIONS=()
+    
+    # Handle specific file names by excluding them directly
+    for EXCLUDE in "${EXCLUDED_FILES[@]}"; do
+        FIND_EXCLUSIONS+=(! -name "$EXCLUDE")
+    done
+
+    # Handle directory exclusions at any level
+    for DIR in "${EXCLUDED_DIRECTORIES[@]}"; do
+        FIND_EXCLUSIONS+=(! -path "*/${DIR}/*")
+    done
+
+    # Exclude files based on extensions
+    for EXT in "${EXCLUDED_FILE_EXTENSIONS[@]}"; do
+        FIND_EXCLUSIONS+=(! -iname "*.$EXT")
+    done
+
+    while IFS= read -r FILE; do
+        # Remove leading './', add newline, and add header with file name including quotes
+        echo -e "\n// Contents of: \"${FILE#./}\":" >> "$OUTPUT_FILE"
+        cat "$FILE" >> "$OUTPUT_FILE"
+    done < <(find "$DIRECTORY_TO_SEARCH" -type f "${FIND_EXCLUSIONS[@]}")
+
+
+    # After concatenation, calculate file size in kilobytes (rounded to two decimal places)
+    FILE_SIZE_KB=$(awk "BEGIN {printf \"%.2f\", $(stat -c %s "$OUTPUT_FILE")/1024}")
+
+    # Count the number of lines in the output file
+    LINE_COUNT=$(wc -l < "$OUTPUT_FILE")
+
+    echo "Concatenation successful. Output file: $OUTPUT_FILE (Size: $FILE_SIZE_KB KB, Lines: $LINE_COUNT)"
+}
+
 # --show-control-chars: help showing Korean or accented characters
 alias ls='ls -F --color=auto --show-control-chars'
 alias ll='ls -l'
@@ -76,56 +119,9 @@ gogogo() {
     git add . && git commit -m"$1" --no-verify && git push origin --no-verify
 }
 
-
 listall() {
 	find . ! -path "./node_modules/*" ! -path "./.git/*" ! -path "./.husky/*" -type f -print | sed 's|^\./||'
 }
-
-# For working with LLMs
-concatenate() {
-    DIRECTORY_TO_SEARCH="./"
-    OUTPUT_FILE="concatenated.txt"
-    if [ -f "$OUTPUT_FILE" ]; then
-        rm "$OUTPUT_FILE"
-    fi
-    EXCLUDED_DIRECTORIES=("node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github")
-    EXCLUDED_FILES=("$OUTPUT_FILE" "package-lock.json" "LICENSE" ".gitignore")
-    EXCLUDED_FILE_EXTENSIONS=("jpg" "jpeg" "JPG" "JPEG" "png" "PNG")
-    FIND_EXCLUSIONS=()
-    
-    # Handle specific file names by excluding them directly
-    for EXCLUDE in "${EXCLUDED_FILES[@]}"; do
-        FIND_EXCLUSIONS+=(! -name "$EXCLUDE")
-    done
-
-    # Handle directory exclusions at any level
-    for DIR in "${EXCLUDED_DIRECTORIES[@]}"; do
-        FIND_EXCLUSIONS+=(! -path "*/${DIR}/*")
-    done
-
-    # Exclude files based on extensions
-    for EXT in "${EXCLUDED_FILE_EXTENSIONS[@]}"; do
-        FIND_EXCLUSIONS+=(! -iname "*.$EXT")
-    done
-
-    while IFS= read -r FILE; do
-        # Remove leading './', add newline, and add header with file name including quotes
-        echo -e "\n// Contents of: \"${FILE#./}\":" >> "$OUTPUT_FILE"
-        cat "$FILE" >> "$OUTPUT_FILE"
-    done < <(find "$DIRECTORY_TO_SEARCH" -type f "${FIND_EXCLUSIONS[@]}")
-
-
-    # After concatenation, calculate file size in kilobytes (rounded to two decimal places)
-    FILE_SIZE_KB=$(awk "BEGIN {printf \"%.2f\", $(stat -c %s "$OUTPUT_FILE")/1024}")
-
-    # Count the number of lines in the output file
-    LINE_COUNT=$(wc -l < "$OUTPUT_FILE")
-
-    echo "Concatenation successful. Output file: $OUTPUT_FILE (Size: $FILE_SIZE_KB KB, Lines: $LINE_COUNT)"
-}
-
-
-
 
 #git branch
 alias gbr='git branch'
