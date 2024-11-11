@@ -1,5 +1,6 @@
+# https://github.com/Tenemo/aliases.sh
 # Default location on Windows: C:\Program Files\Git\etc\profile.d\aliases.sh
-# I left the default content in place
+# I left the default contents in place.
 
 # Alias to list aliases. It's aliases all the way down.
 alias aliases="grep '^alias' 'C:/Program Files/Git/etc/profile.d/aliases.sh' | cut -d ' ' -f 2-"
