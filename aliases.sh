@@ -97,12 +97,6 @@ alias gstaging='git checkout staging && git pull origin staging'
 alias gmaster='git checkout master && git pull origin'
 alias gmain='git checkout main && git pull origin'
 
-mainsync() {
-	CURRENT_BRANCH=$(git rev-parse --abbrev-ref @)
-	git checkout main && git pull origin && npm run hasura:migrate:apply && npm run hasura:metadata:apply && git checkout ${CURRENT_BRANCH}
-}
-
-
 # git commit
 alias gc='git commit'
 alias gamend='git commit --amend --no-edit'
