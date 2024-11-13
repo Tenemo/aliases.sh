@@ -1,7 +1,8 @@
+import { defineConfig, Plugin } from "vite";
 import fs from "fs";
 import path from "path";
 
-const escapeHtml = (content) => {
+const escapeHtml = (content: string): string => {
   return content
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -10,14 +11,14 @@ const escapeHtml = (content) => {
     .replace(/'/g, "&#039;");
 };
 
-export default {
+export default defineConfig({
   server: {
     open: true,
   },
   plugins: [
     {
       name: "inject-aliases",
-      transformIndexHtml(html) {
+      transformIndexHtml(html: string): string {
         const aliasesPath = path.resolve(__dirname, "aliases.sh");
         const aliasesContent = fs.readFileSync(aliasesPath, "utf-8");
         const escapedContent = escapeHtml(aliasesContent);
@@ -26,6 +27,6 @@ export default {
           `<pre><code class="language-bash">${escapedContent}</code></pre>`
         );
       },
-    },
+    } as Plugin,
   ],
-};
+});
