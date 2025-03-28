@@ -108,6 +108,9 @@ gcm() {
 gac() {
     git add . && git commit -m"$1"
 }
+gacgo() {
+    git add . && git commit -m"$1" --no-verify
+}
 gogo() {
     git add . && git commit -m"$1" && git push origin
 }
