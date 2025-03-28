@@ -1,7 +1,7 @@
 {
   "name": "aliases.sh",
   "version": "1.0.0",
-  "description": "aliases.sh",
+  "description": "A curated list of bash aliases, aimed mostly at developers. Includes an alias concatenating the whole directory into a text file for LLM workflows.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
