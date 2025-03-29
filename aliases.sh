@@ -3,8 +3,15 @@
 # Default location on Windows: C:\Program Files\Git\etc\profile.d\aliases.sh
 # I left the default contents in place.
 
+# Default location on MacOS: ~/.zshrc
+# after updating, run `source ~/.zshrc` to apply the changes.
+
 # Alias to list aliases. It's aliases all the way down.
-alias aliases="grep '^alias' 'C:/Program Files/Git/etc/profile.d/aliases.sh' | cut -d ' ' -f 2-"
+if [ "$(uname)" = "Darwin" ]; then
+    alias aliases="grep '^alias' ~/.aliases.sh | cut -d ' ' -f 2-"
+else
+    alias aliases="grep '^alias' 'C:/Program Files/Git/etc/profile.d/aliases.sh' | cut -d ' ' -f 2-"
+fi
 
 # For working with LLMs
 concatenate() {
@@ -40,8 +47,13 @@ concatenate() {
     done < <(find "$DIRECTORY_TO_SEARCH" -type f "${FIND_EXCLUSIONS[@]}")
 
 
+    if [ "$(uname)" = "Darwin" ]; then
+        FILE_SIZE_BYTES=$(stat -f %z "$OUTPUT_FILE")
+    else
+        FILE_SIZE_BYTES=$(stat -c %s "$OUTPUT_FILE")
+    fi
     # After concatenation, calculate file size in kilobytes (rounded to two decimal places)
-    FILE_SIZE_KB=$(awk "BEGIN {printf \"%.2f\", $(stat -c %s "$OUTPUT_FILE")/1024}")
+    FILE_SIZE_KB=$(awk "BEGIN {printf \"%.2f\", $FILE_SIZE_BYTES/1024}")
 
     # Count the number of lines in the output file
     LINE_COUNT=$(wc -l < "$OUTPUT_FILE")
@@ -50,7 +62,11 @@ concatenate() {
 }
 
 # --show-control-chars: help showing Korean or accented characters
-alias ls='ls -F --color=auto --show-control-chars'
+if [ "$(uname)" = "Darwin" ]; then
+    alias ls='ls -F -G'
+else
+    alias ls='ls -F --color=auto --show-control-chars'
+fi
 alias ll='ls -l'
 
 # NPM
@@ -179,17 +195,19 @@ alias gdl='git ll -1'
 # git remote
 alias gprune='git remote update origin --prune'
 
-case "$TERM" in
-xterm*)
-    # The following programs are known to require a Win32 Console
-    # for interactive usage, therefore let's launch them through winpty
-    # when run inside `mintty`.
-    for name in node ipython php php5 psql python2.7
-    do
-        case "$(type -p "$name".exe 2>/dev/null)" in
-        ''|/usr/bin/*) continue;;
-        esac
-        alias $name="winpty $name.exe"
-    done
-    ;;
-esac
+if [ "$(uname)" != "Darwin" ]; then
+    case "$TERM" in
+    xterm*)
+        # The following programs are known to require a Win32 Console
+        # for interactive usage, therefore let's launch them through winpty
+        # when run inside `mintty`.
+        for name in node ipython php php5 psql python2.7
+        do
+            case "$(type -p "$name".exe 2>/dev/null)" in
+            ''|/usr/bin/*) continue;;
+            esac
+            alias $name="winpty $name.exe"
+        done
+        ;;
+    esac
+fi
