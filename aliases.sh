@@ -16,13 +16,13 @@ fi
 # For working with LLMs
 concatenate() {
     DIRECTORY_TO_SEARCH="./"
-    OUTPUT_FILE="concatenated.txt"
+    OUTPUT_FILE="temp.txt"
     if [ -f "$OUTPUT_FILE" ]; then
         rm "$OUTPUT_FILE"
     fi
-    EXCLUDED_DIRECTORIES=("node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github")
+    EXCLUDED_DIRECTORIES=("node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github" "coverage")
     EXCLUDED_FILES=("$OUTPUT_FILE" "package-lock.json" "LICENSE" ".gitignore")
-    EXCLUDED_FILE_EXTENSIONS=("jpg" "jpeg" "JPG" "JPEG" "png" "PNG")
+    EXCLUDED_FILE_EXTENSIONS=("jpg" "jpeg" "JPG" "JPEG" "png" "PNG" "ico" "webp" "svg" "mp4")
     FIND_EXCLUSIONS=()
     
     # Handle specific file names by excluding them directly
