@@ -24,12 +24,12 @@ else
 fi
 alias ll='ls -l'
 
-# For working with LLMs (Optimized for speed)
+# For working with LLMs
 concatenate() {
     DIRECTORY_TO_SEARCH="${1:-./}" # Default to current dir, can accept arg
     OUTPUT_FILE="temp.txt"
     
-    # Exclude these directories completely (prune) to save massive time
+    # Exclude these directories completely
     EXCLUDED_DIRECTORIES=("node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github" "coverage" ".pio" ".vscode" ".idea" "__pycache__")
     # Exclude specific filenames
     EXCLUDED_FILES=("$OUTPUT_FILE" "package-lock.json" "yarn.lock" "LICENSE" ".gitignore" "c_cpp_properties.json" "launch.json" "settings.json" "Cargo.lock")
@@ -39,7 +39,7 @@ concatenate() {
     # Build the find command using an array to handle spaces and special chars safely
     FIND_CMD=(find "$DIRECTORY_TO_SEARCH")
 
-    # 1. Prune directories (Do not enter them)
+    # 1. Prune directories
     for DIR in "${EXCLUDED_DIRECTORIES[@]}"; do
         FIND_CMD+=(-name "$DIR" -prune -o)
     done
