@@ -131,3 +131,5 @@ dist
 
 # misc
 concatenated.txt
+temp/
+temp.txt
