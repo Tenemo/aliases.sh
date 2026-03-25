@@ -52,12 +52,14 @@ concat() {
         "node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github"
         "coverage" ".pio" ".vscode" ".idea" "__pycache__"
         ".venv" "venv" "build" "bin" "obj" ".gradle" ".terraform" ".m2" ".cache"
+		"temp" ".npm-cache" ".react-router"
     )
 
     # ── Exclude specific filenames (outside excluded dirs) ──
     local EXCLUDED_FILES=(
         "package-lock.json" "yarn.lock" "LICENSE" ".gitignore"
         "c_cpp_properties.json" "launch.json" "settings.json" "Cargo.lock"
+		"AGENTS.md"
     )
 
     # ── Exclude extensions (outside excluded dirs) ──
