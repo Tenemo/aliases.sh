@@ -47,7 +47,7 @@ concat() {
         return 2
     fi
 
-    # ── Exclude these directories completely (existence only; DO NOT scan inside) ──
+    # Exclude these directories completely (existence only; do not scan inside)
     local EXCLUDED_DIRECTORIES=(
         "node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github"
         "coverage" ".pio" ".vscode" ".idea" "__pycache__"
@@ -55,14 +55,14 @@ concat() {
 		"temp" ".npm-cache" ".react-router"
     )
 
-    # ── Exclude specific filenames (outside excluded dirs) ──
+    # Exclude specific filenames (outside excluded dirs)
     local EXCLUDED_FILES=(
         "package-lock.json" "yarn.lock" "LICENSE" ".gitignore"
         "c_cpp_properties.json" "launch.json" "settings.json" "Cargo.lock"
 		"AGENTS.md"
     )
 
-    # ── Exclude extensions (outside excluded dirs) ──
+    # Exclude extensions (outside excluded dirs)
     local EXCLUDED_FILE_EXTENSIONS=(
         "jpg" "jpeg" "png" "ico" "webp" "svg" "gif" "mp4" "pdf"
         "exe" "dll" "bin" "zip" "tar" "gz" "iso"
@@ -79,7 +79,7 @@ concat() {
         "${OUTPUT_FILE}.tmp" "${OUTPUT_FILE}.excluded" "${OUTPUT_FILE}.tmp.tmp"
     )
 
-    # ── Fast membership sets ──
+    # Fast membership sets
     declare -A EXCL_DIR_SET
     declare -A EXCL_FILE_SET
     declare -A EXCL_EXT_SET
@@ -91,7 +91,7 @@ concat() {
     for e in "${EXCLUDED_FILE_EXTENSIONS[@]}"; do EXCL_EXT_SET["$e"]=1; done
     for f in "${INTERNAL_ROOT_FILES[@]}"; do INTERNAL_ROOT_SET["$f"]=1; done
 
-    # ── Helpers ──
+    # Helpers
     _file_size_bytes() {
         # echo size in bytes, metadata-only when possible
         local fp="$1" s=""
@@ -109,7 +109,7 @@ concat() {
         printf '%*s' "$nspaces" ""
     }
 
-    # ── Init temps ──
+    # Init temps
     : > "$TMP_TREE" || return 1
     : > "$TMP_EXCL_DIRS" || return 1
     : > "$TMP_EXCL_FILES" || return 1
@@ -118,7 +118,7 @@ concat() {
     # Root line for tree
     echo "// ." >> "$TMP_TREE"
 
-    # ── Build a single find command that:
+    # Build a single find command that:
     #    - prints excluded dirs, then prunes them (so we never see their children)
     #    - prints everything else (dirs + files)
     local FIND_CMD=()
@@ -137,7 +137,7 @@ concat() {
     done
     FIND_CMD+=( \) -print0 -prune \) -o -print0 )
 
-    # ── Single traversal (never walks inside excluded dirs due to -prune) ──
+    # Single traversal (never walks inside excluded dirs due to -prune)
     local included_count=0
     local excluded_file_count=0
     local pruned_dir_count=0
@@ -224,7 +224,7 @@ concat() {
         fi
     done < <(cd "$DIRECTORY_TO_SEARCH" && "${FIND_CMD[@]}")
 
-    # ── Build final output (ALL in temp.txt) ──
+    # Build final output (all in temp.txt)
     : > "$TMP_FINAL" || return 1
 
     {
