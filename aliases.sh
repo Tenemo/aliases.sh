@@ -364,14 +364,28 @@ gacgo() {
     [ $# -gt 0 ] || { echo "Usage: gacgo <commit message>" >&2; return 2; }
     git add . && git commit -m "$*" --no-verify
 }
+_git_push_origin_current() {
+    local BRANCH
+    BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
+        echo "_git_push_origin_current: not on a branch (detached HEAD)." >&2
+        echo "Use: git push <remote> HEAD:<branch>" >&2
+        return 2
+    fi
+    if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+        git push "$@" origin "$BRANCH"
+    else
+        git push "$@" --set-upstream origin "$BRANCH"
+    fi
+}
 gogo() {
     [ $# -gt 0 ] || { echo "Usage: gogo <commit message>" >&2; return 2; }
-    git add . && git commit -m "$*" && git push origin
+    git add . && git commit -m "$*" && _git_push_origin_current
 }
 gogogo() {
     # WARNING: This skips pre-commit hooks. Use with caution.
     [ $# -gt 0 ] || { echo "Usage: gogogo <commit message>" >&2; return 2; }
-    git add . && git commit -m "$*" --no-verify && git push origin --no-verify
+    git add . && git commit -m "$*" --no-verify && _git_push_origin_current --no-verify
 }
 
 listall() {
@@ -425,13 +439,22 @@ gploh() {
     git pull origin "$BRANCH"
 }
 
-alias gpo='git push origin'
-alias gforce='git push origin --force-with-lease'
+unalias gpo 2>/dev/null
+gpo() {
+    _git_push_origin_current
+}
+unalias gforce 2>/dev/null
+gforce() {
+    _git_push_origin_current --force-with-lease
+}
 alias gpod='git push origin development'
 alias gpos='git push origin staging'
 alias gpom='git push origin master'
 alias gpomain='git push origin main'
-alias gpoh='git push origin HEAD'
+unalias gpoh 2>/dev/null
+gpoh() {
+    _git_push_origin_current
+}
 
 alias gr='git reset'
 alias gr1='git reset HEAD^'
