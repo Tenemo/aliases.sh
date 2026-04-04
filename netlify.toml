@@ -5,6 +5,17 @@ publish = "dist"
 [build.environment]
 NODE_VERSION = "24.14.1"
 
+[[headers]]
+for = "/*"
+
+[headers.values]
+Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+Cross-Origin-Opener-Policy = "same-origin"
+X-Frame-Options = "DENY"
+X-Content-Type-Options = "nosniff"
+Referrer-Policy = "strict-origin-when-cross-origin"
+Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; manifest-src 'self'; upgrade-insecure-requests;"
+
 [[redirects]]
 from = "https://www.aliases.sh/*"
 to = "https://aliases.sh/:splat"
