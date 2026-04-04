@@ -1,32 +1,9 @@
-import { defineConfig, Plugin } from "vite";
-import fs from "fs";
-import path from "path";
-
-const escapeHtml = (content: string): string => {
-  return content
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-};
+import { defineConfig } from "vite";
+import { createInjectAliasesPlugin } from "./src/injectAliases";
 
 export default defineConfig({
   server: {
     open: true,
   },
-  plugins: [
-    {
-      name: "inject-aliases",
-      transformIndexHtml(html: string): string {
-        const aliasesPath = path.resolve(__dirname, "aliases.sh");
-        const aliasesContent = fs.readFileSync(aliasesPath, "utf-8");
-        const escapedContent = escapeHtml(aliasesContent);
-        return html.replace(
-          '<pre><code class="language-bash"></code></pre>',
-          `<pre><code class="language-bash">${escapedContent}</code></pre>`
-        );
-      },
-    } as Plugin,
-  ],
+  plugins: [createInjectAliasesPlugin(__dirname)],
 });

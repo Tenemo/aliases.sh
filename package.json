@@ -4,8 +4,12 @@
   "description": "My curated list of bash aliases that I use, hosted online so that I can access it easily from anywhere, especially on new devices. It's aimed mostly at developers using git and NPM, but it has other useful aliases as well. Includes an alias concatenating the whole directory into a text file for LLM workflows.",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prebuild": "npm test",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "prepare": "husky"
   },
   "author": "piotr@piech.dev",
   "license": "MIT",
@@ -13,8 +17,12 @@
     "highlight.js": "^11.11.1"
   },
   "devDependencies": {
+    "@types/jsdom": "^28.0.1",
     "@types/node": "^25.5.2",
+    "husky": "^9.1.7",
+    "jsdom": "^29.0.1",
     "typescript": "^6.0.2",
-    "vite": "^8.0.3"
+    "vite": "^8.0.3",
+    "vitest": "^4.1.2"
   }
 }
