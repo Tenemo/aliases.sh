@@ -112,6 +112,236 @@ concat() {
         rm -rf -- "$TMP_ROOT"
     }
 
+    _concat_report_output() {
+        local output_path="$1"
+        local OUTPUT_SIZE_BYTES OUTPUT_SIZE_KB OUTPUT_LINES
+        OUTPUT_SIZE_BYTES="$(_file_size_bytes "$output_path" 2>/dev/null)" || OUTPUT_SIZE_BYTES="?"
+        OUTPUT_LINES="$(wc -l < "$output_path" 2>/dev/null | tr -d '[:space:]')" || OUTPUT_LINES="?"
+        [ -n "$OUTPUT_SIZE_BYTES" ] || OUTPUT_SIZE_BYTES="?"
+        [ -n "$OUTPUT_LINES" ] || OUTPUT_LINES="?"
+        if [ "$OUTPUT_SIZE_BYTES" = "?" ]; then
+            OUTPUT_SIZE_KB="?"
+        else
+            OUTPUT_SIZE_KB="$(awk "BEGIN { printf \"%.2f\", $OUTPUT_SIZE_BYTES / 1024 }")"
+        fi
+        echo "Wrote $output_path: ${OUTPUT_SIZE_KB} KB, ${OUTPUT_LINES} lines" >&2
+    }
+
+    # Prefer the Perl path when available so traversal, binary detection, and file reads
+    # stay inside one process instead of thousands of shell-level operations.
+    if command -v perl >/dev/null 2>&1; then
+        local EXCLUDED_DIRECTORIES_TEXT EXCLUDED_FILES_TEXT EXCLUDED_FILE_EXTENSIONS_TEXT INTERNAL_ROOT_FILES_TEXT
+        EXCLUDED_DIRECTORIES_TEXT="$(printf '%s\n' "${EXCLUDED_DIRECTORIES[@]}")"
+        EXCLUDED_FILES_TEXT="$(printf '%s\n' "${EXCLUDED_FILES[@]}")"
+        EXCLUDED_FILE_EXTENSIONS_TEXT="$(printf '%s\n' "${EXCLUDED_FILE_EXTENSIONS[@]}")"
+        INTERNAL_ROOT_FILES_TEXT="$(printf '%s\n' "${INTERNAL_ROOT_FILES[@]}")"
+
+        if CONCAT_EXCLUDED_DIRECTORIES="$EXCLUDED_DIRECTORIES_TEXT" \
+           CONCAT_EXCLUDED_FILES="$EXCLUDED_FILES_TEXT" \
+           CONCAT_EXCLUDED_FILE_EXTENSIONS="$EXCLUDED_FILE_EXTENSIONS_TEXT" \
+           CONCAT_INTERNAL_ROOT_FILES="$INTERNAL_ROOT_FILES_TEXT" \
+           CONCAT_MAX_BYTES="$MAX_BYTES" \
+           perl - "$DIRECTORY_TO_SEARCH" "$TMP_FINAL" <<'PERL'
+use strict;
+use warnings;
+use Cwd qw(abs_path);
+use File::Find;
+use File::Spec;
+
+sub split_env_lines {
+    my ($name) = @_;
+    my $value = $ENV{$name} // q{};
+    return grep { length } split /\n/, $value;
+}
+
+my ($root_arg, $output_path) = @ARGV;
+my $root_abs = abs_path($root_arg);
+die "concat: failed to resolve path: $root_arg\n" unless defined $root_abs;
+
+my $max_bytes = int($ENV{CONCAT_MAX_BYTES} // 0);
+my %excluded_dirs = map { $_ => 1 } split_env_lines('CONCAT_EXCLUDED_DIRECTORIES');
+my %excluded_files = map { $_ => 1 } split_env_lines('CONCAT_EXCLUDED_FILES');
+my %excluded_ext = map { $_ => 1 } split_env_lines('CONCAT_EXCLUDED_FILE_EXTENSIONS');
+my %internal_root = map { $_ => 1 } split_env_lines('CONCAT_INTERNAL_ROOT_FILES');
+
+my @records;
+my %contents_by_rel;
+
+find(
+    {
+        no_chdir => 1,
+        wanted => sub {
+            my $full_path = $File::Find::name;
+            my $rel = File::Spec->abs2rel($full_path, $root_abs);
+            $rel =~ s{\\}{/}g;
+            return if $rel eq q{.};
+
+            my ($basename) = $rel =~ m{([^/]+)\z};
+            $basename //= $rel;
+
+            if (-d $full_path) {
+                if ($excluded_dirs{$basename}) {
+                    push @records, ['D', $rel];
+                    $File::Find::prune = 1;
+                } else {
+                    push @records, ['d', $rel];
+                }
+                return;
+            }
+
+            return unless -f $full_path;
+            return if $internal_root{$rel};
+
+            my $ext = q{};
+            if ($basename =~ /\.([^.]+)\z/) {
+                $ext = lc $1;
+            }
+            my $ext_tag = length($ext) ? ".$ext" : '(noext)';
+            my $reason = q{};
+
+            if ($excluded_files{$basename}) {
+                $reason = 'name';
+            } elsif (length($ext) && $excluded_ext{$ext}) {
+                $reason = 'ext';
+            } elsif (!-r $full_path) {
+                $reason = 'unreadable';
+            } else {
+                my $size = -s $full_path;
+                $size = 0 if !defined $size;
+
+                if ($max_bytes > 0 && $size > $max_bytes) {
+                    $reason = 'size';
+                } elsif ($size == 0) {
+                    $contents_by_rel{$rel} = q{};
+                } else {
+                    if (open my $fh, '<:raw', $full_path) {
+                        local $/;
+                        my $content = <$fh>;
+                        close $fh;
+
+                        if (!defined $content) {
+                            $reason = 'unreadable';
+                        } elsif (index(substr($content, 0, 512), "\0") != -1) {
+                            $reason = 'binary';
+                        } else {
+                            $contents_by_rel{$rel} = $content;
+                        }
+                    } else {
+                        $reason = 'unreadable';
+                    }
+                }
+            }
+
+            if ($reason) {
+                push @records, ['x', $rel, $ext_tag];
+            } else {
+                push @records, ['c', $rel, $ext_tag];
+            }
+        },
+    },
+    $root_abs,
+);
+
+@records = sort { $a->[1] cmp $b->[1] } @records;
+
+my @excluded_dir_paths;
+my @excluded_file_entries;
+my @included_paths;
+my $included_count = 0;
+my $excluded_file_count = 0;
+my $pruned_dir_count = 0;
+
+for my $record (@records) {
+    my ($type, $rel, $ext_tag) = @$record;
+    if ($type eq 'D') {
+        push @excluded_dir_paths, $rel;
+        $pruned_dir_count += 1;
+    } elsif ($type eq 'x') {
+        push @excluded_file_entries, [$ext_tag, $rel];
+        $excluded_file_count += 1;
+    } elsif ($type eq 'c') {
+        push @included_paths, $rel;
+        $included_count += 1;
+    }
+}
+
+open my $out, '>:raw', $output_path or die "concat: failed to write $output_path: $!\n";
+
+print {$out} "// concatenate snapshot\n";
+print {$out} "// root: $root_arg\n";
+print {$out} "//\n";
+print {$out} "// Included files (contents copied): $included_count\n";
+print {$out} "// Excluded files (names only):       $excluded_file_count\n";
+print {$out} "// Excluded directories (pruned):     $pruned_dir_count\n";
+print {$out} "// Max file size for inclusion:       $max_bytes bytes (0 disables)\n";
+print {$out} "//\n";
+print {$out} "// NOTE: Excluded directories are listed but NOT traversed; no child entries are present.\n\n";
+
+print {$out} "// === FILE TREE (PRUNED) ===\n";
+print {$out} "// .\n";
+for my $record (@records) {
+    my ($type, $rel) = @$record;
+    my ($basename) = $rel =~ m{([^/]+)\z};
+    $basename //= $rel;
+    my $depth = () = $rel =~ m{/}g;
+    my $indent = q{ } x (2 * ($depth + 1));
+
+    if ($type eq 'D') {
+        print {$out} "// ${indent}${basename}/  [excluded-dir]\n";
+    } elsif ($type eq 'd') {
+        print {$out} "// ${indent}${basename}/\n";
+    } elsif ($type eq 'x') {
+        print {$out} "// ${indent}${basename}  [excluded]\n";
+    } else {
+        print {$out} "// ${indent}${basename}\n";
+    }
+}
+print {$out} "\n";
+
+print {$out} "// === EXCLUDED DIRECTORIES (EXISTENCE ONLY; NOT SCANNED) ===\n";
+if (@excluded_dir_paths) {
+    for my $rel (@excluded_dir_paths) {
+        print {$out} "// - $rel/\n";
+    }
+} else {
+    print {$out} "// (none)\n";
+}
+print {$out} "\n";
+
+print {$out} "// === EXCLUDED FILES (NAMES ONLY; OUTSIDE PRUNED DIRS) ===\n";
+print {$out} "// Grouped by extension.\n";
+if (@excluded_file_entries) {
+    my $current_ext = q{};
+    for my $entry (sort { $a->[0] cmp $b->[0] || $a->[1] cmp $b->[1] } @excluded_file_entries) {
+        my ($ext_tag, $rel) = @$entry;
+        if ($ext_tag ne $current_ext) {
+            print {$out} "//\n" if length $current_ext;
+            $current_ext = $ext_tag;
+            print {$out} "// $current_ext:\n";
+        }
+        print {$out} "//   $rel\n";
+    }
+} else {
+    print {$out} "// (none)\n";
+}
+print {$out} "\n";
+
+print {$out} "// === INCLUDED FILE CONTENTS ===\n";
+for my $rel (@included_paths) {
+    print {$out} qq{\n// Contents of: "$rel"\n};
+    print {$out} ($contents_by_rel{$rel} // q{});
+}
+
+close $out or die "concat: failed to finalize $output_path: $!\n";
+PERL
+        then
+            mv -f "$TMP_FINAL" "$OUTPUT_FILE" || { _concat_cleanup; return 1; }
+            _concat_cleanup
+            _concat_report_output "$OUTPUT_FILE"
+            return 0
+        fi
+    fi
+
     # Init temps
     : > "$TMP_TREE" || { _concat_cleanup; return 1; }
     : > "$TMP_EXCL_DIRS" || { _concat_cleanup; return 1; }
@@ -429,19 +659,7 @@ concat() {
 
     # cleanup
     _concat_cleanup
-
-    # Optional: keep terminal quiet; comment this out if you truly want zero output
-    local OUTPUT_SIZE_BYTES OUTPUT_SIZE_KB OUTPUT_LINES
-    OUTPUT_SIZE_BYTES="$(_file_size_bytes "$OUTPUT_FILE" 2>/dev/null)" || OUTPUT_SIZE_BYTES="?"
-    OUTPUT_LINES="$(wc -l < "$OUTPUT_FILE" 2>/dev/null | tr -d '[:space:]')" || OUTPUT_LINES="?"
-    [ -n "$OUTPUT_SIZE_BYTES" ] || OUTPUT_SIZE_BYTES="?"
-    [ -n "$OUTPUT_LINES" ] || OUTPUT_LINES="?"
-    if [ "$OUTPUT_SIZE_BYTES" = "?" ]; then
-        OUTPUT_SIZE_KB="?"
-    else
-        OUTPUT_SIZE_KB="$(awk "BEGIN { printf \"%.2f\", $OUTPUT_SIZE_BYTES / 1024 }")"
-    fi
-    echo "Wrote $OUTPUT_FILE: ${OUTPUT_SIZE_KB} KB, ${OUTPUT_LINES} lines" >&2
+    _concat_report_output "$OUTPUT_FILE"
 }
 
 alias i='npm install'
