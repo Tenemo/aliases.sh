@@ -1,14 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { JSDOM } from "jsdom";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { injectAliasesIntoHtml } from "../src/injectAliases";
-import { initializeAliasesPage } from "../src/page";
 
 const projectRoot = process.cwd();
 
 describe("aliases page integration", () => {
-  it("renders the real aliases file and keeps ctrl+a copy-paste friendly", () => {
+  it("renders the real aliases file as a single static highlighted code block", () => {
     const indexHtml = fs.readFileSync(path.join(projectRoot, "index.html"), "utf-8");
     const aliasesContent = fs.readFileSync(
       path.join(projectRoot, "aliases.sh"),
@@ -18,24 +17,16 @@ describe("aliases page integration", () => {
     const dom = new JSDOM(renderedHtml, {
       url: "https://aliases.sh/",
     });
-    const highlighter = {
-      highlightElement: vi.fn(),
-    };
 
-    initializeAliasesPage(dom.window.document, dom.window, highlighter);
-    dom.window.document.dispatchEvent(
-      new dom.window.KeyboardEvent("keydown", {
-        bubbles: true,
-        cancelable: true,
-        ctrlKey: true,
-        key: "a",
-      })
+    expect(dom.window.document.querySelectorAll("script")).toHaveLength(0);
+    expect(dom.window.document.body.children).toHaveLength(1);
+    expect(dom.window.document.body.firstElementChild?.tagName).toBe("PRE");
+    expect(dom.window.document.querySelectorAll("pre code")).toHaveLength(1);
+    expect(dom.window.document.querySelector("pre code")?.textContent).toBe(
+      aliasesContent
     );
-
-    expect(highlighter.highlightElement).toHaveBeenCalledTimes(1);
-    expect(
-      dom.window.document.querySelector("pre code")?.textContent
-    ).toBe(aliasesContent);
-    expect(dom.window.getSelection()?.toString()).toBe(aliasesContent);
+    expect(dom.window.document.querySelector("pre code.hljs")).not.toBeNull();
+    expect(dom.window.document.querySelector('pre code span[class^="hljs"]')).not.toBeNull();
+    expect(dom.window.document.querySelector("style")?.textContent).toContain(".hljs");
   });
 });

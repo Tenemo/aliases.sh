@@ -8,17 +8,18 @@
     "test:watch": "vitest",
     "prebuild": "npm test",
     "build": "vite build",
+    "postbuild": "npm run verify:dist",
     "preview": "vite preview",
-    "prepare": "husky"
+    "prepare": "husky",
+    "verify:dist": "node scripts/verify-dist.mjs"
   },
   "author": "piotr@piech.dev",
   "license": "MIT",
-  "dependencies": {
-    "highlight.js": "^11.11.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/jsdom": "^28.0.1",
     "@types/node": "^25.5.2",
+    "highlight.js": "^11.11.1",
     "husky": "^9.1.7",
     "jsdom": "^29.0.1",
     "typescript": "^6.0.2",
