@@ -59,7 +59,7 @@ concat() {
     local EXCLUDED_FILES=(
         "package-lock.json" "yarn.lock" "LICENSE" ".gitignore"
         "c_cpp_properties.json" "launch.json" "settings.json" "Cargo.lock"
-		"AGENTS.md"
+		"AGENTS.md" ".env" "pnpm-lock.yaml"
     )
 
     # Exclude extensions (outside excluded dirs)

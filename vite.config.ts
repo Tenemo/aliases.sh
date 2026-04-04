@@ -22,9 +22,10 @@ export default defineConfig({
         const aliasesPath = path.resolve(__dirname, "aliases.sh");
         const aliasesContent = fs.readFileSync(aliasesPath, "utf-8");
         const escapedContent = escapeHtml(aliasesContent);
-        return html.replace('<pre><code class="language-bash"></code></pre>', () => {
-          return `<pre><code class="language-bash">${escapedContent}</code></pre>`;
-        });
+        return html.replace(
+          '<pre><code class="language-bash"></code></pre>',
+          `<pre><code class="language-bash">${escapedContent}</code></pre>`
+        );
       },
     } as Plugin,
   ],
