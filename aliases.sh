@@ -49,6 +49,7 @@ concat() {
     local TMP_EXCL_FILES="$TMP_ROOT/excluded_files.tmp"
     local TMP_CONTENTS="$TMP_ROOT/contents.tmp"
     local TMP_RECORDS="$TMP_ROOT/records.tmp"
+    local TMP_SORTED_RECORDS="$TMP_ROOT/records.sorted.tmp"
     local TMP_CANDIDATE_PATHS="$TMP_ROOT/candidate_paths.tmp"
     local TMP_INCLUDED_FILES="$TMP_ROOT/included_files.tmp"
     local TMP_GREP_PROBE="$TMP_ROOT/grep-probe.tmp"
@@ -117,6 +118,7 @@ concat() {
     : > "$TMP_EXCL_FILES" || { _concat_cleanup; return 1; }
     : > "$TMP_CONTENTS" || { _concat_cleanup; return 1; }
     : > "$TMP_RECORDS" || { _concat_cleanup; return 1; }
+    : > "$TMP_SORTED_RECORDS" || { _concat_cleanup; return 1; }
     : > "$TMP_CANDIDATE_PATHS" || { _concat_cleanup; return 1; }
     : > "$TMP_INCLUDED_FILES" || { _concat_cleanup; return 1; }
 
@@ -297,6 +299,9 @@ concat() {
     local pruned_dir_count=0
     local SLASHES DEPTH INDENT RECORD_TYPE RECORD_EXT_TAG RECORD_REASON
 
+    LC_ALL=C sort -t$'\t' -k2,2 "$TMP_RECORDS" > "$TMP_SORTED_RECORDS" \
+        || { _concat_cleanup; return 1; }
+
     while IFS=$'\t' read -r RECORD_TYPE REL RECORD_EXT_TAG RECORD_REASON; do
         [ -z "$RECORD_TYPE" ] && continue
 
@@ -335,7 +340,7 @@ concat() {
         printf '// %s%s\n' "$INDENT" "$BASENAME" >&3
         printf '%s\n' "$REL" >&6
         included_count=$((included_count + 1))
-    done < "$TMP_RECORDS"
+    done < "$TMP_SORTED_RECORDS"
 
     exec 3>&- 4>&- 5>&- 6>&-
 
