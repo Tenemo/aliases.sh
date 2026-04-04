@@ -502,3 +502,36 @@ if [ "$(uname)" != "Darwin" ]; then
         ;;
     esac
 fi
+
+# make sure git completion is loaded first
+type __git_complete >/dev/null 2>&1 || \
+    . "/mingw64/share/git/completion/git-completion.bash"
+
+__git_complete ga _git_add
+__git_complete gs _git_status
+__git_complete gcp _git_cherry_pick
+
+__git_complete gco _git_checkout
+__git_complete gcob _git_checkout
+
+__git_complete gc _git_commit
+__git_complete gdc _git_diff
+__git_complete gdiff _git_diff
+
+__git_complete gploh _git_pull
+__git_complete gplo _git_pull
+__git_complete gplod _git_pull
+__git_complete gplos _git_pull
+__git_complete gplom _git_pull
+__git_complete gplomain _git_pull
+
+__git_complete gpo _git_push
+__git_complete gpoh _git_push
+__git_complete gforce _git_push
+
+__git_complete gst _git_stash
+__git_complete gsa _git_stash
+__git_complete gss _git_stash
+
+__git_complete gbr _git_branch
+__git_complete gbrd _git_branch
