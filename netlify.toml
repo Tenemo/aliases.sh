@@ -1,5 +1,9 @@
 [build]
+command = "pnpm build"
 publish = "dist"
+
+[build.environment]
+NODE_VERSION = "24.14.1"
 
 [[redirects]]
 from = "https://www.aliases.sh/*"

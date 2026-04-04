@@ -326,6 +326,8 @@ alias cuu='ncu --packageFile package.json -u && rm -rf package-lock.json node_mo
 alias cxuu='ncu --packageFile package.json -u -x "history" && rm -rf package-lock.json node_modules && npm install'
 alias cruu='ncu --packageFile package.json -u -x react,react-dom  && rm -rf package-lock.json node_modules && npm install'
 
+alias pnpmup='pnpm -r up --latest && pnpm install --force'
+
 alias global='npm list -g --depth 0'
 alias globaloutdated='npm outdated -g --depth=0'
 alias nuke_modules='rm -rf node_modules package-lock.json && npm install'
