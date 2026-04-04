@@ -2,13 +2,14 @@
   "name": "aliases.sh",
   "version": "1.0.0",
   "description": "My curated list of bash aliases that I use, hosted online so that I can access it easily from anywhere, especially on new devices. It's aimed mostly at developers using git and NPM, but it has other useful aliases as well. Includes an alias concatenating the whole directory into a text file for LLM workflows.",
+  "packageManager": "pnpm@9.9.0",
   "scripts": {
     "dev": "vite",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prebuild": "npm test",
+    "prebuild": "pnpm test",
     "build": "vite build",
-    "postbuild": "npm run verify:dist",
+    "postbuild": "pnpm verify:dist",
     "preview": "vite preview",
     "prepare": "husky",
     "verify:dist": "node scripts/verify-dist.mjs"
