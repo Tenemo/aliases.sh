@@ -1,12 +1,15 @@
+import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { JSDOM } from "jsdom";
-import { describe, expect, it } from "vitest";
 import { injectAliasesIntoHtml } from "../src/injectAliases";
 
 const projectRoot = process.cwd();
 const canonicalUrl = "https://aliases.sh/";
+const title = "aliases.sh | curated bash aliases for Git and npm";
 const ogImageUrl = "https://aliases.sh/og/aliases-sh.png";
+const ogImageAlt =
+  "Preview of the aliases.sh bash aliases file with syntax highlighting.";
 
 describe("aliases page integration", () => {
   it("renders the real aliases file as a single static highlighted code block", () => {
@@ -17,7 +20,7 @@ describe("aliases page integration", () => {
     );
     const renderedHtml = injectAliasesIntoHtml(indexHtml, aliasesContent);
     const dom = new JSDOM(renderedHtml, {
-      url: "https://aliases.sh/",
+      url: canonicalUrl,
     });
 
     expect(dom.window.document.querySelectorAll('script[type="application/ld+json"]')).toHaveLength(1);
@@ -44,9 +47,8 @@ describe("aliases page integration", () => {
       url: canonicalUrl,
     });
 
-    expect(dom.window.document.title).toBe(
-      "aliases.sh | curated bash aliases for Git and npm"
-    );
+    expect(dom.window.document.documentElement.lang).toBe("en");
+    expect(dom.window.document.title).toBe(title);
     expect(
       dom.window.document.querySelectorAll('link[rel="canonical"]')
     ).toHaveLength(1);
@@ -73,7 +75,7 @@ describe("aliases page integration", () => {
       dom.window.document
         .querySelector('meta[property="og:image:alt"]')
         ?.getAttribute("content")
-    ).toBe("Preview of the aliases.sh bash aliases file with syntax highlighting.");
+    ).toBe(ogImageAlt);
     expect(
       dom.window.document
         .querySelector('meta[name="twitter:card"]')
@@ -88,7 +90,7 @@ describe("aliases page integration", () => {
       dom.window.document
         .querySelector('meta[name="twitter:image:alt"]')
         ?.getAttribute("content")
-    ).toBe("Preview of the aliases.sh bash aliases file with syntax highlighting.");
+    ).toBe(ogImageAlt);
 
     const structuredDataScripts = dom.window.document.querySelectorAll(
       'script[type="application/ld+json"]'

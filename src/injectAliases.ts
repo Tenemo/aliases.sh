@@ -5,7 +5,7 @@ import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import type { Plugin } from "vite";
 
-export const ALIASES_TEMPLATE = '<pre><code class="language-bash"></code></pre>';
+export const ALIASES_PLACEHOLDER = "<!-- __ALIASES_CONTENT__ -->";
 export const HIGHLIGHT_THEME_PLACEHOLDER = "/* __INLINE_HLJS_THEME__ */";
 
 const require = createRequire(import.meta.url);
@@ -13,16 +13,7 @@ const highlightThemePath = require.resolve("highlight.js/styles/a11y-dark.css");
 
 hljs.registerLanguage("bash", bash);
 
-export const escapeHtml = (content: string): string => {
-  return content
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-};
-
-const replaceTemplate = (
+const replaceUniquePlaceholder = (
   html: string,
   placeholder: string,
   replacement: string,
@@ -61,14 +52,14 @@ export const injectAliasesIntoHtml = (
   aliasesContent: string,
   highlightThemeCss: string = readHighlightThemeCss()
 ): string => {
-  const htmlWithAliases = replaceTemplate(
+  const htmlWithAliases = replaceUniquePlaceholder(
     html,
-    ALIASES_TEMPLATE,
+    ALIASES_PLACEHOLDER,
     renderAliasesBlock(aliasesContent),
     "aliases"
   );
 
-  return replaceTemplate(
+  return replaceUniquePlaceholder(
     htmlWithAliases,
     HIGHLIGHT_THEME_PLACEHOLDER,
     highlightThemeCss,
@@ -76,11 +67,11 @@ export const injectAliasesIntoHtml = (
   );
 };
 
-export const getAliasesFilePath = (rootDir: string): string => {
+const getAliasesFilePath = (rootDir: string): string => {
   return path.resolve(rootDir, "aliases.sh");
 };
 
-export const readAliasesFile = (rootDir: string): string => {
+const readAliasesFile = (rootDir: string): string => {
   return fs.readFileSync(getAliasesFilePath(rootDir), "utf-8");
 };
 

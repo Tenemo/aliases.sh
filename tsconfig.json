@@ -4,12 +4,10 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
-    "jsx": "preserve",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "sourceMap": true,
     "types": ["node"]
   },
   "include": ["src", "tests", "vite.config.ts"],
