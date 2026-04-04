@@ -36,16 +36,22 @@ concat() {
     local DIRECTORY_TO_SEARCH="${1:-./}"
 
     local OUTPUT_FILE="temp.txt"
-    local TMP_FINAL="${OUTPUT_FILE}.final.tmp"
-    local TMP_TREE="${OUTPUT_FILE}.tree.tmp"
-    local TMP_EXCL_DIRS="${OUTPUT_FILE}.excluded_dirs.tmp"
-    local TMP_EXCL_FILES="${OUTPUT_FILE}.excluded_files.tmp"
-    local TMP_CONTENTS="${OUTPUT_FILE}.contents.tmp"
-
     if [ ! -d "$DIRECTORY_TO_SEARCH" ]; then
         echo "concat: directory not found: $DIRECTORY_TO_SEARCH" >&2
         return 2
     fi
+
+    local TMP_ROOT
+    TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/concat.XXXXXX")" || return 1
+    local TMP_FINAL="$TMP_ROOT/final.tmp"
+    local TMP_TREE="$TMP_ROOT/tree.tmp"
+    local TMP_EXCL_DIRS="$TMP_ROOT/excluded_dirs.tmp"
+    local TMP_EXCL_FILES="$TMP_ROOT/excluded_files.tmp"
+    local TMP_CONTENTS="$TMP_ROOT/contents.tmp"
+    local TMP_RECORDS="$TMP_ROOT/records.tmp"
+    local TMP_CANDIDATE_PATHS="$TMP_ROOT/candidate_paths.tmp"
+    local TMP_INCLUDED_FILES="$TMP_ROOT/included_files.tmp"
+    local TMP_GREP_PROBE="$TMP_ROOT/grep-probe.tmp"
 
     # Exclude these directories completely (existence only; do not scan inside)
     local EXCLUDED_DIRECTORIES=(
@@ -75,7 +81,8 @@ concat() {
     # Note: only skipped when they are at repo root (REL == name).
     local INTERNAL_ROOT_FILES=(
         "$OUTPUT_FILE"
-        "$TMP_FINAL" "$TMP_TREE" "$TMP_EXCL_DIRS" "$TMP_EXCL_FILES" "$TMP_CONTENTS"
+        "${OUTPUT_FILE}.final.tmp" "${OUTPUT_FILE}.tree.tmp"
+        "${OUTPUT_FILE}.excluded_dirs.tmp" "${OUTPUT_FILE}.excluded_files.tmp" "${OUTPUT_FILE}.contents.tmp"
         "${OUTPUT_FILE}.tmp" "${OUTPUT_FILE}.excluded" "${OUTPUT_FILE}.tmp.tmp"
     )
 
@@ -100,132 +107,269 @@ concat() {
         wc -c < "$fp" 2>/dev/null
     }
 
-    _indent_for_rel() {
-        # prints indentation for a relative path based on depth
-        local rel="$1"
-        local slashes="${rel//[^\/]/}"
-        local depth="${#slashes}"
-        local nspaces=$((2 * (depth + 1)))
-        printf '%*s' "$nspaces" ""
+    _concat_cleanup() {
+        rm -rf -- "$TMP_ROOT"
     }
 
     # Init temps
-    : > "$TMP_TREE" || return 1
-    : > "$TMP_EXCL_DIRS" || return 1
-    : > "$TMP_EXCL_FILES" || return 1
-    : > "$TMP_CONTENTS" || return 1
+    : > "$TMP_TREE" || { _concat_cleanup; return 1; }
+    : > "$TMP_EXCL_DIRS" || { _concat_cleanup; return 1; }
+    : > "$TMP_EXCL_FILES" || { _concat_cleanup; return 1; }
+    : > "$TMP_CONTENTS" || { _concat_cleanup; return 1; }
+    : > "$TMP_RECORDS" || { _concat_cleanup; return 1; }
+    : > "$TMP_CANDIDATE_PATHS" || { _concat_cleanup; return 1; }
+    : > "$TMP_INCLUDED_FILES" || { _concat_cleanup; return 1; }
+
+    exec 3>"$TMP_TREE" 4>"$TMP_EXCL_DIRS" 5>"$TMP_EXCL_FILES" 6>"$TMP_INCLUDED_FILES"
 
     # Root line for tree
-    echo "// ." >> "$TMP_TREE"
+    printf '%s\n' "// ." >&3
 
     # Build a single find command that:
     #    - prints excluded dirs, then prunes them (so we never see their children)
     #    - prints everything else (dirs + files)
     local FIND_CMD=()
     FIND_CMD+=(find .)
-
-    # \( -type d \( -name A -o -name B ... \) -print0 -prune \) -o -print0
     FIND_CMD+=( \( -type d \( )
     local first=1
     for d in "${EXCLUDED_DIRECTORIES[@]}"; do
-        if [ $first -eq 1 ]; then
+        if [ "$first" -eq 1 ]; then
             FIND_CMD+=(-name "$d")
             first=0
         else
             FIND_CMD+=(-o -name "$d")
         fi
     done
-    FIND_CMD+=( \) -print0 -prune \) -o -print0 )
 
-    # Single traversal (never walks inside excluded dirs due to -prune)
-    local included_count=0
-    local excluded_file_count=0
-    local pruned_dir_count=0
+    local FIND_SUPPORTS_PRINTF=0
+    if (cd "$DIRECTORY_TO_SEARCH" && find . -maxdepth 0 -printf '' >/dev/null 2>&1); then
+        FIND_SUPPORTS_PRINTF=1
+    fi
 
-    while IFS= read -r -d '' ITEM; do
-        # Normalize relative path (strip leading ./)
-        local REL="${ITEM#./}"
-        [ -z "$REL" ] && continue  # skip "."
+    if [ "$FIND_SUPPORTS_PRINTF" -eq 1 ]; then
+        FIND_CMD+=( \) -printf '%P\tD\t0\0' -prune \) -o -printf '%P\t%y\t%s\0' )
+    else
+        FIND_CMD+=( \) -print0 -prune \) -o -print0 )
+    fi
 
-        # Skip internal files only if they are at root (REL matches exactly)
-        if [[ ${INTERNAL_ROOT_SET["$REL"]+x} ]]; then
-            continue
-        fi
+    local ITEM REL TYPE SIZE BASENAME FULLPATH EXT EXT_TAG REASON
 
-        local FULLPATH="$DIRECTORY_TO_SEARCH/$REL"
-        local INDENT; INDENT="$(_indent_for_rel "$REL")"
-        local BASENAME="${REL##*/}"
+    if [ "$FIND_SUPPORTS_PRINTF" -eq 1 ]; then
+        while IFS= read -r -d '' ITEM; do
+            IFS=$'\t' read -r REL TYPE SIZE <<< "$ITEM"
+            [ -z "$REL" ] && continue
 
-        # Directory entry
-        if [ -d "$FULLPATH" ]; then
-            if [[ ${EXCL_DIR_SET["$BASENAME"]+x} ]]; then
-                # Excluded directory: note existence, do not scan children (already pruned by find)
-                echo "// ${INDENT}${BASENAME}/  [excluded-dir]" >> "$TMP_TREE"
-                echo "$REL" >> "$TMP_EXCL_DIRS"
-                pruned_dir_count=$((pruned_dir_count + 1))
-            else
-                echo "// ${INDENT}${BASENAME}/" >> "$TMP_TREE"
+            BASENAME="${REL##*/}"
+            FULLPATH="$DIRECTORY_TO_SEARCH/$REL"
+            SIZE="${SIZE:-0}"
+
+            if [ "$TYPE" = "D" ]; then
+                printf 'D\t%s\n' "$REL" >> "$TMP_RECORDS"
+                continue
             fi
-            continue
-        fi
 
-        # File entry
-        if [ -f "$FULLPATH" ]; then
-            # Determine extension (lowercase)
-            local EXT=""
+            if [ "$TYPE" != "f" ] && [ "$TYPE" != "d" ]; then
+                continue
+            fi
+
+            if [ "$TYPE" = "d" ]; then
+                printf 'd\t%s\n' "$REL" >> "$TMP_RECORDS"
+                continue
+            fi
+
+            if [[ ${INTERNAL_ROOT_SET["$REL"]+x} ]]; then
+                continue
+            fi
+
+            EXT=""
             if [[ "$BASENAME" == *.* ]]; then
                 EXT="${BASENAME##*.}"
                 EXT="${EXT,,}"
             fi
-            local EXT_TAG
             if [ -n "$EXT" ]; then EXT_TAG=".$EXT"; else EXT_TAG="(noext)"; fi
 
-            # Classify exclusion/inclusion (outside excluded dirs only, by construction)
-            local REASON=""
-
-            # excluded by exact filename
+            REASON=""
             if [[ ${EXCL_FILE_SET["$BASENAME"]+x} ]]; then
                 REASON="name"
-            # excluded by extension
             elif [ -n "$EXT" ] && [[ ${EXCL_EXT_SET["$EXT"]+x} ]]; then
                 REASON="ext"
-            # unreadable
             elif [ ! -r "$FULLPATH" ]; then
                 REASON="unreadable"
-            # size cap (metadata)
-            elif [ "$MAX_BYTES" -gt 0 ]; then
-                local SIZE; SIZE="$(_file_size_bytes "$FULLPATH")" || SIZE=0
+            elif [ "$MAX_BYTES" -gt 0 ] && [ -n "$SIZE" ] && [ "$SIZE" -gt "$MAX_BYTES" ] 2>/dev/null; then
+                REASON="size"
+            fi
+
+            if [ -n "$REASON" ]; then
+                printf 'x\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$REASON" >> "$TMP_RECORDS"
+                continue
+            fi
+
+            printf 'c\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$FULLPATH" >> "$TMP_RECORDS"
+            if [ "$SIZE" -gt 0 ] 2>/dev/null; then
+                printf '%s\0' "$FULLPATH" >> "$TMP_CANDIDATE_PATHS"
+            fi
+        done < <(cd "$DIRECTORY_TO_SEARCH" && "${FIND_CMD[@]}")
+    else
+        while IFS= read -r -d '' ITEM; do
+            REL="${ITEM#./}"
+            [ -z "$REL" ] && continue
+
+            BASENAME="${REL##*/}"
+            FULLPATH="$DIRECTORY_TO_SEARCH/$REL"
+            SIZE=0
+
+            if [ -d "$FULLPATH" ]; then
+                if [[ ${EXCL_DIR_SET["$BASENAME"]+x} ]]; then
+                    printf 'D\t%s\n' "$REL" >> "$TMP_RECORDS"
+                else
+                    printf 'd\t%s\n' "$REL" >> "$TMP_RECORDS"
+                fi
+                continue
+            fi
+
+            if [ ! -f "$FULLPATH" ]; then
+                continue
+            fi
+
+            if [[ ${INTERNAL_ROOT_SET["$REL"]+x} ]]; then
+                continue
+            fi
+
+            EXT=""
+            if [[ "$BASENAME" == *.* ]]; then
+                EXT="${BASENAME##*.}"
+                EXT="${EXT,,}"
+            fi
+            if [ -n "$EXT" ]; then EXT_TAG=".$EXT"; else EXT_TAG="(noext)"; fi
+
+            REASON=""
+            if [[ ${EXCL_FILE_SET["$BASENAME"]+x} ]]; then
+                REASON="name"
+            elif [ -n "$EXT" ] && [[ ${EXCL_EXT_SET["$EXT"]+x} ]]; then
+                REASON="ext"
+            elif [ ! -r "$FULLPATH" ]; then
+                REASON="unreadable"
+            else
+                SIZE="$(_file_size_bytes "$FULLPATH")" || SIZE=0
+            fi
+
+            if [ -z "$REASON" ] && [ "$MAX_BYTES" -gt 0 ]; then
                 if [ -n "$SIZE" ] && [ "$SIZE" -gt "$MAX_BYTES" ] 2>/dev/null; then
                     REASON="size"
                 fi
             fi
 
-            # binary detection (only if not excluded yet)
-            if [ -z "$REASON" ] && [ -s "$FULLPATH" ]; then
-                # Fast binary sniff: grep reads minimally for empty pattern, and -I rejects binary
-                if ! LC_ALL=C grep -Iq '' -- "$FULLPATH"; then
-                    REASON="binary"
-                fi
-            fi
-
             if [ -n "$REASON" ]; then
-                # Excluded file: record it, include only as a name in tree
-                echo "// ${INDENT}${BASENAME}  [excluded]" >> "$TMP_TREE"
-                printf '%s\t%s\t%s\n' "$EXT_TAG" "$REL" "$REASON" >> "$TMP_EXCL_FILES"
-                excluded_file_count=$((excluded_file_count + 1))
+                printf 'x\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$REASON" >> "$TMP_RECORDS"
                 continue
             fi
 
-            # Included file
-            echo "// ${INDENT}${BASENAME}" >> "$TMP_TREE"
-            printf '\n// Contents of: "%s"\n' "$REL" >> "$TMP_CONTENTS"
-            cat -- "$FULLPATH" >> "$TMP_CONTENTS"
-            included_count=$((included_count + 1))
+            printf 'c\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$FULLPATH" >> "$TMP_RECORDS"
+            if [ "$SIZE" -gt 0 ] 2>/dev/null; then
+                printf '%s\0' "$FULLPATH" >> "$TMP_CANDIDATE_PATHS"
+            fi
+        done < <(cd "$DIRECTORY_TO_SEARCH" && "${FIND_CMD[@]}")
+    fi
+
+    declare -A BINARY_FILE_SET
+    local CAN_BATCH_BINARY=0
+    : > "$TMP_GREP_PROBE"
+    if grep -ILZ '' -- "$TMP_GREP_PROBE" >/dev/null 2>&1; then
+        CAN_BATCH_BINARY=1
+    fi
+
+    if [ -s "$TMP_CANDIDATE_PATHS" ]; then
+        if [ "$CAN_BATCH_BINARY" -eq 1 ]; then
+            while IFS= read -r -d '' FULLPATH; do
+                BINARY_FILE_SET["$FULLPATH"]=1
+            done < <(xargs -0 grep -ILZ '' < "$TMP_CANDIDATE_PATHS" 2>/dev/null || true)
+        else
+            while IFS= read -r -d '' FULLPATH; do
+                if [ -s "$FULLPATH" ] && ! LC_ALL=C grep -Iq '' -- "$FULLPATH"; then
+                    BINARY_FILE_SET["$FULLPATH"]=1
+                fi
+            done < "$TMP_CANDIDATE_PATHS"
         fi
-    done < <(cd "$DIRECTORY_TO_SEARCH" && "${FIND_CMD[@]}")
+    fi
+
+    local included_count=0
+    local excluded_file_count=0
+    local pruned_dir_count=0
+    local SLASHES DEPTH INDENT RECORD_TYPE RECORD_EXT_TAG RECORD_REASON
+
+    while IFS=$'\t' read -r RECORD_TYPE REL RECORD_EXT_TAG RECORD_REASON; do
+        [ -z "$RECORD_TYPE" ] && continue
+
+        BASENAME="${REL##*/}"
+        SLASHES="${REL//[^\/]/}"
+        DEPTH="${#SLASHES}"
+        printf -v INDENT '%*s' "$((2 * (DEPTH + 1)))" ""
+
+        if [ "$RECORD_TYPE" = "D" ]; then
+            printf '// %s%s/  [excluded-dir]\n' "$INDENT" "$BASENAME" >&3
+            printf '%s\n' "$REL" >&4
+            pruned_dir_count=$((pruned_dir_count + 1))
+            continue
+        fi
+
+        if [ "$RECORD_TYPE" = "d" ]; then
+            printf '// %s%s/\n' "$INDENT" "$BASENAME" >&3
+            continue
+        fi
+
+        if [ "$RECORD_TYPE" = "c" ]; then
+            FULLPATH="$RECORD_REASON"
+            if [[ ${BINARY_FILE_SET["$FULLPATH"]+x} ]]; then
+                RECORD_TYPE="x"
+                RECORD_REASON="binary"
+            fi
+        fi
+
+        if [ "$RECORD_TYPE" = "x" ]; then
+            printf '// %s%s  [excluded]\n' "$INDENT" "$BASENAME" >&3
+            printf '%s\t%s\t%s\n' "$RECORD_EXT_TAG" "$REL" "$RECORD_REASON" >&5
+            excluded_file_count=$((excluded_file_count + 1))
+            continue
+        fi
+
+        printf '// %s%s\n' "$INDENT" "$BASENAME" >&3
+        printf '%s\n' "$REL" >&6
+        included_count=$((included_count + 1))
+    done < "$TMP_RECORDS"
+
+    exec 3>&- 4>&- 5>&- 6>&-
+
+    : > "$TMP_CONTENTS" || { _concat_cleanup; return 1; }
+    if [ -s "$TMP_INCLUDED_FILES" ]; then
+        if command -v perl >/dev/null 2>&1; then
+            (
+                cd "$DIRECTORY_TO_SEARCH" || exit 1
+                perl -ne '
+                    BEGIN { binmode STDOUT; }
+                    chomp;
+                    $rel = $_;
+                    print qq{\n// Contents of: "$rel"\n};
+                    open my $fh, "<", $rel or next;
+                    binmode $fh;
+                    while (read $fh, my $buf, 65536) {
+                        print $buf;
+                    }
+                    close $fh;
+                ' "$TMP_INCLUDED_FILES"
+            ) > "$TMP_CONTENTS"
+        else
+            (
+                cd "$DIRECTORY_TO_SEARCH" || exit 1
+                while IFS= read -r REL; do
+                    printf '\n// Contents of: "%s"\n' "$REL"
+                    cat -- "$REL"
+                done < "$TMP_INCLUDED_FILES"
+            ) > "$TMP_CONTENTS"
+        fi
+    fi
 
     # Build final output (all in temp.txt)
-    : > "$TMP_FINAL" || return 1
+    : > "$TMP_FINAL" || { _concat_cleanup; return 1; }
 
     {
         echo "// concatenate snapshot"
@@ -276,10 +420,10 @@ concat() {
         cat "$TMP_CONTENTS"
     } >> "$TMP_FINAL"
 
-    mv -f "$TMP_FINAL" "$OUTPUT_FILE" || return 1
+    mv -f "$TMP_FINAL" "$OUTPUT_FILE" || { _concat_cleanup; return 1; }
 
     # cleanup
-    rm -f "$TMP_TREE" "$TMP_EXCL_DIRS" "$TMP_EXCL_FILES" "$TMP_CONTENTS"
+    _concat_cleanup
 
     # Optional: keep terminal quiet; comment this out if you truly want zero output
     local OUTPUT_SIZE_BYTES OUTPUT_SIZE_KB OUTPUT_LINES
@@ -411,16 +555,16 @@ gdc() {
 }
 gdiff() {
     if [ -n "$1" ]; then
-        git diff "$1" --word-diff -- ":(exclude)package-lock.json"
+        git diff "$1" --word-diff -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     else
-        git diff --word-diff -- ":(exclude)package-lock.json"
+        git diff --word-diff -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     fi
 }
 gdiffloc() {
     if [ -n "$1" ]; then
-        git diff --shortstat "$1" -- ":(exclude)package-lock.json"
+        git diff --shortstat "$1" -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     else
-        git diff --shortstat -- ":(exclude)package-lock.json"
+        git diff --shortstat -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     fi
 }
 

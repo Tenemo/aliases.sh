@@ -18,7 +18,16 @@ A tiny static site that publishes my curated bash aliases and renders the real [
 pnpm install
 pnpm dev
 pnpm test
+pnpm bench:concat
 pnpm build
+```
+
+Optional benchmark examples:
+
+```bash
+pnpm bench:concat
+pnpm bench:concat -- --scale medium
+pnpm bench:concat -- --target .
 ```
 
 ### Notes
