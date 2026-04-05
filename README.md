@@ -11,6 +11,7 @@ A tiny static site that publishes my curated bash aliases and renders the real [
 - `index.html` contains the site metadata directly and uses an explicit placeholder for the aliases code block.
 - `src/injectAliases.ts` inlines the Highlight.js theme and renders the real `aliases.sh` content at build/dev time.
 - The built site is static and does not include runtime browser JavaScript.
+- `concat` is a Bash wrapper over an inline Node engine at the end of `aliases.sh`.
 
 ### Local development
 
@@ -57,3 +58,4 @@ On Windows, the harness needs Git Bash. Set `GIT_BASH_PATH` if it is installed o
 ### Notes
 
 - `aliases.sh` itself is currently Bash-oriented. This repo does not guarantee zsh compatibility.
+- `concat` now requires Node, but the full implementation is inlined inside `aliases.sh`.

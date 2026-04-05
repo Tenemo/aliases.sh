@@ -289,26 +289,27 @@ describe("concat", () => {
     expect(treeSection).not.toContain("temp.txt.tree.tmp");
 
     expect(readNonEmptyLines(excludedDirsSection)).toEqual([
-      "// - .git/",
-      "// - nested/node_modules/",
-      "// - node_modules/",
+      "// Listed alphabetically.",
+      "//   - .git/",
+      "//   - nested/node_modules/",
+      "//   - node_modules/",
     ]);
 
     expect(excludedFilesSection.trim()).toBe(
       [
-        "// Grouped by extension.",
-        "// .env:",
-        "//   config/.env",
+        "// Grouped by extension with counts.",
+        "// .env (1):",
+        "//   - config/.env",
         "//",
-        "// .png:",
-        "//   assets/logo.png",
+        "// .png (1):",
+        "//   - assets/logo.png",
         "//",
-        "// .txt:",
-        "//   big/huge.txt",
-        "//   src/binary.txt",
+        "// .txt (2):",
+        "//   - big/huge.txt",
+        "//   - src/binary.txt",
         "//",
-        "// .yaml:",
-        "//   pnpm-lock.yaml",
+        "// .yaml (1):",
+        "//   - pnpm-lock.yaml",
       ].join("\n")
     );
 

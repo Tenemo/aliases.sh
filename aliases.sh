@@ -34,632 +34,19 @@ alias ll='ls -l'
 # For working with LLMs
 concat() {
     local DIRECTORY_TO_SEARCH="${1:-./}"
-
     local OUTPUT_FILE="temp.txt"
+
     if [ ! -d "$DIRECTORY_TO_SEARCH" ]; then
         echo "concat: directory not found: $DIRECTORY_TO_SEARCH" >&2
         return 2
     fi
 
-    local TMP_ROOT
-    TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/concat.XXXXXX")" || return 1
-    local TMP_FINAL="$TMP_ROOT/final.tmp"
-    local TMP_TREE="$TMP_ROOT/tree.tmp"
-    local TMP_EXCL_DIRS="$TMP_ROOT/excluded_dirs.tmp"
-    local TMP_EXCL_FILES="$TMP_ROOT/excluded_files.tmp"
-    local TMP_CONTENTS="$TMP_ROOT/contents.tmp"
-    local TMP_RECORDS="$TMP_ROOT/records.tmp"
-    local TMP_SORTED_RECORDS="$TMP_ROOT/records.sorted.tmp"
-    local TMP_CANDIDATE_PATHS="$TMP_ROOT/candidate_paths.tmp"
-    local TMP_INCLUDED_FILES="$TMP_ROOT/included_files.tmp"
-    local TMP_GREP_PROBE="$TMP_ROOT/grep-probe.tmp"
-
-    # Exclude these directories completely (existence only; do not scan inside)
-    local EXCLUDED_DIRECTORIES=(
-        "node_modules" ".git" "dist" ".husky" "fonts" "target" "benches" ".github"
-        "coverage" ".pio" ".vscode" ".idea" "__pycache__"
-        ".venv" "venv" "build" "bin" "obj" ".gradle" ".terraform" ".m2" ".cache"
-		"temp" ".npm-cache" ".react-router"
-    )
-
-    # Exclude specific filenames (outside excluded dirs)
-    local EXCLUDED_FILES=(
-        "package-lock.json" "yarn.lock" "LICENSE" ".gitignore"
-        "c_cpp_properties.json" "launch.json" "settings.json" "Cargo.lock"
-		"AGENTS.md" ".env" "pnpm-lock.yaml"
-    )
-
-    # Exclude extensions (outside excluded dirs)
-    local EXCLUDED_FILE_EXTENSIONS=(
-        "jpg" "jpeg" "png" "ico" "webp" "svg" "gif" "mp4" "pdf"
-        "exe" "dll" "bin" "zip" "tar" "gz" "iso"
-    )
-
-    # Skip files larger than this (0 disables); size check uses stat (metadata), not reading the file
-    local MAX_BYTES=$((2 * 1024 * 1024))  # 2 MiB
-
-    # Internal files created by this function (do not include in tree/excluded lists/contents)
-    # Note: only skipped when they are at repo root (REL == name).
-    local INTERNAL_ROOT_FILES=(
-        "$OUTPUT_FILE"
-        "${OUTPUT_FILE}.final.tmp" "${OUTPUT_FILE}.tree.tmp"
-        "${OUTPUT_FILE}.excluded_dirs.tmp" "${OUTPUT_FILE}.excluded_files.tmp" "${OUTPUT_FILE}.contents.tmp"
-        "${OUTPUT_FILE}.tmp" "${OUTPUT_FILE}.excluded" "${OUTPUT_FILE}.tmp.tmp"
-    )
-
-    # Fast membership sets
-    declare -A EXCL_DIR_SET
-    declare -A EXCL_FILE_SET
-    declare -A EXCL_EXT_SET
-    declare -A INTERNAL_ROOT_SET
-
-    local d f e
-    for d in "${EXCLUDED_DIRECTORIES[@]}"; do EXCL_DIR_SET["$d"]=1; done
-    for f in "${EXCLUDED_FILES[@]}"; do EXCL_FILE_SET["$f"]=1; done
-    for e in "${EXCLUDED_FILE_EXTENSIONS[@]}"; do EXCL_EXT_SET["$e"]=1; done
-    for f in "${INTERNAL_ROOT_FILES[@]}"; do INTERNAL_ROOT_SET["$f"]=1; done
-
-    # Helpers
-    _file_size_bytes() {
-        # echo size in bytes, metadata-only when possible
-        local fp="$1" s=""
-        if s=$(stat -c %s -- "$fp" 2>/dev/null); then printf '%s' "$s"; return 0; fi
-        if s=$(stat -f %z -- "$fp" 2>/dev/null); then printf '%s' "$s"; return 0; fi
-        wc -c < "$fp" 2>/dev/null
-    }
-
-    _concat_cleanup() {
-        rm -rf -- "$TMP_ROOT"
-    }
-
-    _concat_report_output() {
-        local output_path="$1"
-        local OUTPUT_SIZE_BYTES OUTPUT_SIZE_KB OUTPUT_LINES
-        OUTPUT_SIZE_BYTES="$(_file_size_bytes "$output_path" 2>/dev/null)" || OUTPUT_SIZE_BYTES="?"
-        OUTPUT_LINES="$(wc -l < "$output_path" 2>/dev/null | tr -d '[:space:]')" || OUTPUT_LINES="?"
-        [ -n "$OUTPUT_SIZE_BYTES" ] || OUTPUT_SIZE_BYTES="?"
-        [ -n "$OUTPUT_LINES" ] || OUTPUT_LINES="?"
-        if [ "$OUTPUT_SIZE_BYTES" = "?" ]; then
-            OUTPUT_SIZE_KB="?"
-        else
-            OUTPUT_SIZE_KB="$(awk "BEGIN { printf \"%.2f\", $OUTPUT_SIZE_BYTES / 1024 }")"
-        fi
-        echo "Wrote $output_path: ${OUTPUT_SIZE_KB} KB, ${OUTPUT_LINES} lines" >&2
-    }
-
-    # Prefer the Perl path when available so traversal, binary detection, and file reads
-    # stay inside one process instead of thousands of shell-level operations.
-    if command -v perl >/dev/null 2>&1; then
-        local EXCLUDED_DIRECTORIES_TEXT EXCLUDED_FILES_TEXT EXCLUDED_FILE_EXTENSIONS_TEXT INTERNAL_ROOT_FILES_TEXT
-        EXCLUDED_DIRECTORIES_TEXT="$(printf '%s\n' "${EXCLUDED_DIRECTORIES[@]}")"
-        EXCLUDED_FILES_TEXT="$(printf '%s\n' "${EXCLUDED_FILES[@]}")"
-        EXCLUDED_FILE_EXTENSIONS_TEXT="$(printf '%s\n' "${EXCLUDED_FILE_EXTENSIONS[@]}")"
-        INTERNAL_ROOT_FILES_TEXT="$(printf '%s\n' "${INTERNAL_ROOT_FILES[@]}")"
-
-        if CONCAT_EXCLUDED_DIRECTORIES="$EXCLUDED_DIRECTORIES_TEXT" \
-           CONCAT_EXCLUDED_FILES="$EXCLUDED_FILES_TEXT" \
-           CONCAT_EXCLUDED_FILE_EXTENSIONS="$EXCLUDED_FILE_EXTENSIONS_TEXT" \
-           CONCAT_INTERNAL_ROOT_FILES="$INTERNAL_ROOT_FILES_TEXT" \
-           CONCAT_MAX_BYTES="$MAX_BYTES" \
-           perl - "$DIRECTORY_TO_SEARCH" "$TMP_FINAL" <<'PERL'
-use strict;
-use warnings;
-use Cwd qw(abs_path);
-use File::Find;
-use File::Spec;
-
-sub split_env_lines {
-    my ($name) = @_;
-    my $value = $ENV{$name} // q{};
-    return grep { length } split /\n/, $value;
-}
-
-my ($root_arg, $output_path) = @ARGV;
-my $root_abs = abs_path($root_arg);
-die "concat: failed to resolve path: $root_arg\n" unless defined $root_abs;
-
-my $max_bytes = int($ENV{CONCAT_MAX_BYTES} // 0);
-my %excluded_dirs = map { $_ => 1 } split_env_lines('CONCAT_EXCLUDED_DIRECTORIES');
-my %excluded_files = map { $_ => 1 } split_env_lines('CONCAT_EXCLUDED_FILES');
-my %excluded_ext = map { $_ => 1 } split_env_lines('CONCAT_EXCLUDED_FILE_EXTENSIONS');
-my %internal_root = map { $_ => 1 } split_env_lines('CONCAT_INTERNAL_ROOT_FILES');
-
-my @records;
-my %contents_by_rel;
-
-find(
-    {
-        no_chdir => 1,
-        wanted => sub {
-            my $full_path = $File::Find::name;
-            my $rel = File::Spec->abs2rel($full_path, $root_abs);
-            $rel =~ s{\\}{/}g;
-            return if $rel eq q{.};
-
-            my ($basename) = $rel =~ m{([^/]+)\z};
-            $basename //= $rel;
-
-            if (-d $full_path) {
-                if ($excluded_dirs{$basename}) {
-                    push @records, ['D', $rel];
-                    $File::Find::prune = 1;
-                } else {
-                    push @records, ['d', $rel];
-                }
-                return;
-            }
-
-            return unless -f $full_path;
-            return if $internal_root{$rel};
-
-            my $ext = q{};
-            if ($basename =~ /\.([^.]+)\z/) {
-                $ext = lc $1;
-            }
-            my $ext_tag = length($ext) ? ".$ext" : '(noext)';
-            my $reason = q{};
-
-            if ($excluded_files{$basename}) {
-                $reason = 'name';
-            } elsif (length($ext) && $excluded_ext{$ext}) {
-                $reason = 'ext';
-            } elsif (!-r $full_path) {
-                $reason = 'unreadable';
-            } else {
-                my $size = -s $full_path;
-                $size = 0 if !defined $size;
-
-                if ($max_bytes > 0 && $size > $max_bytes) {
-                    $reason = 'size';
-                } elsif ($size == 0) {
-                    $contents_by_rel{$rel} = q{};
-                } else {
-                    if (open my $fh, '<:raw', $full_path) {
-                        local $/;
-                        my $content = <$fh>;
-                        close $fh;
-
-                        if (!defined $content) {
-                            $reason = 'unreadable';
-                        } elsif (index(substr($content, 0, 512), "\0") != -1) {
-                            $reason = 'binary';
-                        } else {
-                            $contents_by_rel{$rel} = $content;
-                        }
-                    } else {
-                        $reason = 'unreadable';
-                    }
-                }
-            }
-
-            if ($reason) {
-                push @records, ['x', $rel, $ext_tag];
-            } else {
-                push @records, ['c', $rel, $ext_tag];
-            }
-        },
-    },
-    $root_abs,
-);
-
-@records = sort { $a->[1] cmp $b->[1] } @records;
-
-my @excluded_dir_paths;
-my @excluded_file_entries;
-my @included_paths;
-my $included_count = 0;
-my $excluded_file_count = 0;
-my $pruned_dir_count = 0;
-
-for my $record (@records) {
-    my ($type, $rel, $ext_tag) = @$record;
-    if ($type eq 'D') {
-        push @excluded_dir_paths, $rel;
-        $pruned_dir_count += 1;
-    } elsif ($type eq 'x') {
-        push @excluded_file_entries, [$ext_tag, $rel];
-        $excluded_file_count += 1;
-    } elsif ($type eq 'c') {
-        push @included_paths, $rel;
-        $included_count += 1;
-    }
-}
-
-open my $out, '>:raw', $output_path or die "concat: failed to write $output_path: $!\n";
-
-print {$out} "// concatenate snapshot\n";
-print {$out} "// root: $root_arg\n";
-print {$out} "//\n";
-print {$out} "// Included files (contents copied): $included_count\n";
-print {$out} "// Excluded files (names only):       $excluded_file_count\n";
-print {$out} "// Excluded directories (pruned):     $pruned_dir_count\n";
-print {$out} "// Max file size for inclusion:       $max_bytes bytes (0 disables)\n";
-print {$out} "//\n";
-print {$out} "// NOTE: Excluded directories are listed but NOT traversed; no child entries are present.\n\n";
-
-print {$out} "// === FILE TREE (PRUNED) ===\n";
-print {$out} "// .\n";
-for my $record (@records) {
-    my ($type, $rel) = @$record;
-    my ($basename) = $rel =~ m{([^/]+)\z};
-    $basename //= $rel;
-    my $depth = () = $rel =~ m{/}g;
-    my $indent = q{ } x (2 * ($depth + 1));
-
-    if ($type eq 'D') {
-        print {$out} "// ${indent}${basename}/  [excluded-dir]\n";
-    } elsif ($type eq 'd') {
-        print {$out} "// ${indent}${basename}/\n";
-    } elsif ($type eq 'x') {
-        print {$out} "// ${indent}${basename}  [excluded]\n";
-    } else {
-        print {$out} "// ${indent}${basename}\n";
-    }
-}
-print {$out} "\n";
-
-print {$out} "// === EXCLUDED DIRECTORIES (EXISTENCE ONLY; NOT SCANNED) ===\n";
-if (@excluded_dir_paths) {
-    for my $rel (@excluded_dir_paths) {
-        print {$out} "// - $rel/\n";
-    }
-} else {
-    print {$out} "// (none)\n";
-}
-print {$out} "\n";
-
-print {$out} "// === EXCLUDED FILES (NAMES ONLY; OUTSIDE PRUNED DIRS) ===\n";
-print {$out} "// Grouped by extension.\n";
-if (@excluded_file_entries) {
-    my $current_ext = q{};
-    for my $entry (sort { $a->[0] cmp $b->[0] || $a->[1] cmp $b->[1] } @excluded_file_entries) {
-        my ($ext_tag, $rel) = @$entry;
-        if ($ext_tag ne $current_ext) {
-            print {$out} "//\n" if length $current_ext;
-            $current_ext = $ext_tag;
-            print {$out} "// $current_ext:\n";
-        }
-        print {$out} "//   $rel\n";
-    }
-} else {
-    print {$out} "// (none)\n";
-}
-print {$out} "\n";
-
-print {$out} "// === INCLUDED FILE CONTENTS ===\n";
-for my $rel (@included_paths) {
-    print {$out} qq{\n// Contents of: "$rel"\n};
-    print {$out} ($contents_by_rel{$rel} // q{});
-}
-
-close $out or die "concat: failed to finalize $output_path: $!\n";
-PERL
-        then
-            mv -f "$TMP_FINAL" "$OUTPUT_FILE" || { _concat_cleanup; return 1; }
-            _concat_cleanup
-            _concat_report_output "$OUTPUT_FILE"
-            return 0
-        fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "concat: node is required" >&2
+        return 1
     fi
 
-    # Init temps
-    : > "$TMP_TREE" || { _concat_cleanup; return 1; }
-    : > "$TMP_EXCL_DIRS" || { _concat_cleanup; return 1; }
-    : > "$TMP_EXCL_FILES" || { _concat_cleanup; return 1; }
-    : > "$TMP_CONTENTS" || { _concat_cleanup; return 1; }
-    : > "$TMP_RECORDS" || { _concat_cleanup; return 1; }
-    : > "$TMP_SORTED_RECORDS" || { _concat_cleanup; return 1; }
-    : > "$TMP_CANDIDATE_PATHS" || { _concat_cleanup; return 1; }
-    : > "$TMP_INCLUDED_FILES" || { _concat_cleanup; return 1; }
-
-    exec 3>"$TMP_TREE" 4>"$TMP_EXCL_DIRS" 5>"$TMP_EXCL_FILES" 6>"$TMP_INCLUDED_FILES"
-
-    # Root line for tree
-    printf '%s\n' "// ." >&3
-
-    # Build a single find command that:
-    #    - prints excluded dirs, then prunes them (so we never see their children)
-    #    - prints everything else (dirs + files)
-    local FIND_CMD=()
-    FIND_CMD+=(find .)
-    FIND_CMD+=( \( -type d \( )
-    local first=1
-    for d in "${EXCLUDED_DIRECTORIES[@]}"; do
-        if [ "$first" -eq 1 ]; then
-            FIND_CMD+=(-name "$d")
-            first=0
-        else
-            FIND_CMD+=(-o -name "$d")
-        fi
-    done
-
-    local FIND_SUPPORTS_PRINTF=0
-    if (cd "$DIRECTORY_TO_SEARCH" && find . -maxdepth 0 -printf '' >/dev/null 2>&1); then
-        FIND_SUPPORTS_PRINTF=1
-    fi
-
-    if [ "$FIND_SUPPORTS_PRINTF" -eq 1 ]; then
-        FIND_CMD+=( \) -printf '%P\tD\t0\0' -prune \) -o -printf '%P\t%y\t%s\0' )
-    else
-        FIND_CMD+=( \) -print0 -prune \) -o -print0 )
-    fi
-
-    local ITEM REL TYPE SIZE BASENAME FULLPATH EXT EXT_TAG REASON
-
-    if [ "$FIND_SUPPORTS_PRINTF" -eq 1 ]; then
-        while IFS= read -r -d '' ITEM; do
-            IFS=$'\t' read -r REL TYPE SIZE <<< "$ITEM"
-            [ -z "$REL" ] && continue
-
-            BASENAME="${REL##*/}"
-            FULLPATH="$DIRECTORY_TO_SEARCH/$REL"
-            SIZE="${SIZE:-0}"
-
-            if [ "$TYPE" = "D" ]; then
-                printf 'D\t%s\n' "$REL" >> "$TMP_RECORDS"
-                continue
-            fi
-
-            if [ "$TYPE" != "f" ] && [ "$TYPE" != "d" ]; then
-                continue
-            fi
-
-            if [ "$TYPE" = "d" ]; then
-                printf 'd\t%s\n' "$REL" >> "$TMP_RECORDS"
-                continue
-            fi
-
-            if [[ ${INTERNAL_ROOT_SET["$REL"]+x} ]]; then
-                continue
-            fi
-
-            EXT=""
-            if [[ "$BASENAME" == *.* ]]; then
-                EXT="${BASENAME##*.}"
-                EXT="${EXT,,}"
-            fi
-            if [ -n "$EXT" ]; then EXT_TAG=".$EXT"; else EXT_TAG="(noext)"; fi
-
-            REASON=""
-            if [[ ${EXCL_FILE_SET["$BASENAME"]+x} ]]; then
-                REASON="name"
-            elif [ -n "$EXT" ] && [[ ${EXCL_EXT_SET["$EXT"]+x} ]]; then
-                REASON="ext"
-            elif [ ! -r "$FULLPATH" ]; then
-                REASON="unreadable"
-            elif [ "$MAX_BYTES" -gt 0 ] && [ -n "$SIZE" ] && [ "$SIZE" -gt "$MAX_BYTES" ] 2>/dev/null; then
-                REASON="size"
-            fi
-
-            if [ -n "$REASON" ]; then
-                printf 'x\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$REASON" >> "$TMP_RECORDS"
-                continue
-            fi
-
-            printf 'c\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$FULLPATH" >> "$TMP_RECORDS"
-            if [ "$SIZE" -gt 0 ] 2>/dev/null; then
-                printf '%s\0' "$FULLPATH" >> "$TMP_CANDIDATE_PATHS"
-            fi
-        done < <(cd "$DIRECTORY_TO_SEARCH" && "${FIND_CMD[@]}")
-    else
-        while IFS= read -r -d '' ITEM; do
-            REL="${ITEM#./}"
-            [ -z "$REL" ] && continue
-
-            BASENAME="${REL##*/}"
-            FULLPATH="$DIRECTORY_TO_SEARCH/$REL"
-            SIZE=0
-
-            if [ -d "$FULLPATH" ]; then
-                if [[ ${EXCL_DIR_SET["$BASENAME"]+x} ]]; then
-                    printf 'D\t%s\n' "$REL" >> "$TMP_RECORDS"
-                else
-                    printf 'd\t%s\n' "$REL" >> "$TMP_RECORDS"
-                fi
-                continue
-            fi
-
-            if [ ! -f "$FULLPATH" ]; then
-                continue
-            fi
-
-            if [[ ${INTERNAL_ROOT_SET["$REL"]+x} ]]; then
-                continue
-            fi
-
-            EXT=""
-            if [[ "$BASENAME" == *.* ]]; then
-                EXT="${BASENAME##*.}"
-                EXT="${EXT,,}"
-            fi
-            if [ -n "$EXT" ]; then EXT_TAG=".$EXT"; else EXT_TAG="(noext)"; fi
-
-            REASON=""
-            if [[ ${EXCL_FILE_SET["$BASENAME"]+x} ]]; then
-                REASON="name"
-            elif [ -n "$EXT" ] && [[ ${EXCL_EXT_SET["$EXT"]+x} ]]; then
-                REASON="ext"
-            elif [ ! -r "$FULLPATH" ]; then
-                REASON="unreadable"
-            else
-                SIZE="$(_file_size_bytes "$FULLPATH")" || SIZE=0
-            fi
-
-            if [ -z "$REASON" ] && [ "$MAX_BYTES" -gt 0 ]; then
-                if [ -n "$SIZE" ] && [ "$SIZE" -gt "$MAX_BYTES" ] 2>/dev/null; then
-                    REASON="size"
-                fi
-            fi
-
-            if [ -n "$REASON" ]; then
-                printf 'x\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$REASON" >> "$TMP_RECORDS"
-                continue
-            fi
-
-            printf 'c\t%s\t%s\t%s\n' "$REL" "$EXT_TAG" "$FULLPATH" >> "$TMP_RECORDS"
-            if [ "$SIZE" -gt 0 ] 2>/dev/null; then
-                printf '%s\0' "$FULLPATH" >> "$TMP_CANDIDATE_PATHS"
-            fi
-        done < <(cd "$DIRECTORY_TO_SEARCH" && "${FIND_CMD[@]}")
-    fi
-
-    declare -A BINARY_FILE_SET
-    local CAN_BATCH_BINARY=0
-    : > "$TMP_GREP_PROBE"
-    if grep -ILZ '' -- "$TMP_GREP_PROBE" >/dev/null 2>&1; then
-        CAN_BATCH_BINARY=1
-    fi
-
-    if [ -s "$TMP_CANDIDATE_PATHS" ]; then
-        if [ "$CAN_BATCH_BINARY" -eq 1 ]; then
-            while IFS= read -r -d '' FULLPATH; do
-                BINARY_FILE_SET["$FULLPATH"]=1
-            done < <(xargs -0 grep -ILZ '' < "$TMP_CANDIDATE_PATHS" 2>/dev/null || true)
-        else
-            while IFS= read -r -d '' FULLPATH; do
-                if [ -s "$FULLPATH" ] && ! LC_ALL=C grep -Iq '' -- "$FULLPATH"; then
-                    BINARY_FILE_SET["$FULLPATH"]=1
-                fi
-            done < "$TMP_CANDIDATE_PATHS"
-        fi
-    fi
-
-    local included_count=0
-    local excluded_file_count=0
-    local pruned_dir_count=0
-    local SLASHES DEPTH INDENT RECORD_TYPE RECORD_EXT_TAG RECORD_REASON
-
-    LC_ALL=C sort -t$'\t' -k2,2 "$TMP_RECORDS" > "$TMP_SORTED_RECORDS" \
-        || { _concat_cleanup; return 1; }
-
-    while IFS=$'\t' read -r RECORD_TYPE REL RECORD_EXT_TAG RECORD_REASON; do
-        [ -z "$RECORD_TYPE" ] && continue
-
-        BASENAME="${REL##*/}"
-        SLASHES="${REL//[^\/]/}"
-        DEPTH="${#SLASHES}"
-        printf -v INDENT '%*s' "$((2 * (DEPTH + 1)))" ""
-
-        if [ "$RECORD_TYPE" = "D" ]; then
-            printf '// %s%s/  [excluded-dir]\n' "$INDENT" "$BASENAME" >&3
-            printf '%s\n' "$REL" >&4
-            pruned_dir_count=$((pruned_dir_count + 1))
-            continue
-        fi
-
-        if [ "$RECORD_TYPE" = "d" ]; then
-            printf '// %s%s/\n' "$INDENT" "$BASENAME" >&3
-            continue
-        fi
-
-        if [ "$RECORD_TYPE" = "c" ]; then
-            FULLPATH="$RECORD_REASON"
-            if [[ ${BINARY_FILE_SET["$FULLPATH"]+x} ]]; then
-                RECORD_TYPE="x"
-                RECORD_REASON="binary"
-            fi
-        fi
-
-        if [ "$RECORD_TYPE" = "x" ]; then
-            printf '// %s%s  [excluded]\n' "$INDENT" "$BASENAME" >&3
-            printf '%s\t%s\t%s\n' "$RECORD_EXT_TAG" "$REL" "$RECORD_REASON" >&5
-            excluded_file_count=$((excluded_file_count + 1))
-            continue
-        fi
-
-        printf '// %s%s\n' "$INDENT" "$BASENAME" >&3
-        printf '%s\n' "$REL" >&6
-        included_count=$((included_count + 1))
-    done < "$TMP_SORTED_RECORDS"
-
-    exec 3>&- 4>&- 5>&- 6>&-
-
-    : > "$TMP_CONTENTS" || { _concat_cleanup; return 1; }
-    if [ -s "$TMP_INCLUDED_FILES" ]; then
-        if command -v perl >/dev/null 2>&1; then
-            (
-                cd "$DIRECTORY_TO_SEARCH" || exit 1
-                perl -ne '
-                    BEGIN { binmode STDOUT; }
-                    chomp;
-                    $rel = $_;
-                    print qq{\n// Contents of: "$rel"\n};
-                    open my $fh, "<", $rel or next;
-                    binmode $fh;
-                    while (read $fh, my $buf, 65536) {
-                        print $buf;
-                    }
-                    close $fh;
-                ' "$TMP_INCLUDED_FILES"
-            ) > "$TMP_CONTENTS"
-        else
-            (
-                cd "$DIRECTORY_TO_SEARCH" || exit 1
-                while IFS= read -r REL; do
-                    printf '\n// Contents of: "%s"\n' "$REL"
-                    cat -- "$REL"
-                done < "$TMP_INCLUDED_FILES"
-            ) > "$TMP_CONTENTS"
-        fi
-    fi
-
-    # Build final output (all in temp.txt)
-    : > "$TMP_FINAL" || { _concat_cleanup; return 1; }
-
-    {
-        echo "// concatenate snapshot"
-        echo "// root: $DIRECTORY_TO_SEARCH"
-        echo "//"
-        echo "// Included files (contents copied): $included_count"
-        echo "// Excluded files (names only):       $excluded_file_count"
-        echo "// Excluded directories (pruned):     $pruned_dir_count"
-        echo "// Max file size for inclusion:       $MAX_BYTES bytes (0 disables)"
-        echo "//"
-        echo "// NOTE: Excluded directories are listed but NOT traversed; no child entries are present."
-        echo
-
-        echo "// === FILE TREE (PRUNED) ==="
-        cat "$TMP_TREE"
-        echo
-
-        echo "// === EXCLUDED DIRECTORIES (EXISTENCE ONLY; NOT SCANNED) ==="
-        if [ -s "$TMP_EXCL_DIRS" ]; then
-            sort -u "$TMP_EXCL_DIRS" | sed 's#^#// - #; s#$#/#'
-        else
-            echo "// (none)"
-        fi
-        echo
-
-        echo "// === EXCLUDED FILES (NAMES ONLY; OUTSIDE PRUNED DIRS) ==="
-        echo "// Grouped by extension."
-        if [ -s "$TMP_EXCL_FILES" ]; then
-            # Sort by extension then path, group by extension; output ONLY paths (no reasons)
-            sort -t$'\t' -k1,1 -k2,2 "$TMP_EXCL_FILES" \
-              | awk -F'\t' '
-                    BEGIN { cur="" }
-                    {
-                      ext=$1; path=$2;
-                      if (ext != cur) {
-                        if (cur != "") print "//"
-                        cur = ext
-                        print "// " cur ":"
-                      }
-                      print "//   " path
-                    }'
-        else
-            echo "// (none)"
-        fi
-        echo
-
-        echo "// === INCLUDED FILE CONTENTS ==="
-        cat "$TMP_CONTENTS"
-    } >> "$TMP_FINAL"
-
-    mv -f "$TMP_FINAL" "$OUTPUT_FILE" || { _concat_cleanup; return 1; }
-
-    # cleanup
-    _concat_cleanup
-    _concat_report_output "$OUTPUT_FILE"
+    __concat_node "$DIRECTORY_TO_SEARCH" "$OUTPUT_FILE"
 }
 
 alias i='npm install'
@@ -904,3 +291,346 @@ __git_complete gss _git_stash
 
 __git_complete gbr _git_branch
 __git_complete gbrd _git_branch
+
+__concat_node() {
+    command node - "$1" "$2" <<'NODE'
+const { once } = require("node:events");
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+
+const targetArg = process.argv[2] || ".";
+const outputArg = process.argv[3] || "temp.txt";
+const root = path.resolve(process.cwd(), targetArg);
+const outputPath = path.resolve(process.cwd(), outputArg);
+const maxBytes = 2097152;
+const probeBytes = 512;
+const concurrency = Math.min(Math.max((typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length) * 2, 8), 64);
+const excludedDirectories = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  ".husky",
+  "fonts",
+  "target",
+  "benches",
+  ".github",
+  "coverage",
+  ".pio",
+  ".vscode",
+  ".idea",
+  "__pycache__",
+  ".venv",
+  "venv",
+  "build",
+  "bin",
+  "obj",
+  ".gradle",
+  ".terraform",
+  ".m2",
+  ".cache",
+  "temp",
+  ".npm-cache",
+  ".react-router",
+]);
+const excludedFiles = new Set([
+  "package-lock.json",
+  "yarn.lock",
+  "LICENSE",
+  ".gitignore",
+  "c_cpp_properties.json",
+  "launch.json",
+  "settings.json",
+  "Cargo.lock",
+  "AGENTS.md",
+  ".env",
+  "pnpm-lock.yaml",
+]);
+const excludedExtensions = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "ico",
+  "webp",
+  "svg",
+  "gif",
+  "mp4",
+  "pdf",
+  "exe",
+  "dll",
+  "bin",
+  "zip",
+  "tar",
+  "gz",
+  "iso",
+]);
+const internalRootFiles = new Set([
+  outputArg,
+  `${outputArg}.final.tmp`,
+  `${outputArg}.tree.tmp`,
+  `${outputArg}.excluded_dirs.tmp`,
+  `${outputArg}.excluded_files.tmp`,
+  `${outputArg}.contents.tmp`,
+  `${outputArg}.tmp`,
+  `${outputArg}.excluded`,
+  `${outputArg}.tmp.tmp`,
+]);
+const records = [];
+const candidates = [];
+
+const fail = (message) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+};
+
+const relPath = (fullPath) => path.relative(root, fullPath).split(path.sep).join("/");
+
+const extTag = (name) => {
+  const dot = name.lastIndexOf(".");
+  if (dot === -1 || dot === name.length - 1) {
+    return ["", "(noext)"];
+  }
+  const ext = name.slice(dot + 1).toLowerCase();
+  return [ext, `.${ext}`];
+};
+
+const readFull = async (handle, buffer, offset, length, position) => {
+  let total = 0;
+  while (total < length) {
+    const { bytesRead } = await handle.read(buffer, offset + total, length - total, position + total);
+    if (bytesRead === 0) {
+      throw new Error("Unexpected end of file while reading.");
+    }
+    total += bytesRead;
+  }
+};
+
+const walk = () => {
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      const fullPath = path.join(dir, entry.name);
+      const rel = relPath(fullPath);
+      if (entry.isDirectory()) {
+        if (excludedDirectories.has(entry.name)) {
+          records.push(["D", rel]);
+        } else {
+          records.push(["d", rel]);
+          stack.push(fullPath);
+        }
+        continue;
+      }
+      if (!entry.isFile() || internalRootFiles.has(rel)) {
+        continue;
+      }
+      const [ext, tag] = extTag(entry.name);
+      if (excludedFiles.has(entry.name) || (ext && excludedExtensions.has(ext))) {
+        records.push(["x", rel, tag]);
+        continue;
+      }
+      candidates.push([fullPath, rel, tag]);
+    }
+  }
+};
+
+const classify = async () => {
+  const out = new Array(candidates.length);
+  let next = 0;
+  const workerCount = Math.min(concurrency, candidates.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= candidates.length) {
+        return;
+      }
+      const [fullPath, rel, tag] = candidates[index];
+      let handle;
+      try {
+        handle = await fsp.open(fullPath, "r");
+        const stat = await handle.stat();
+        if (!stat.isFile()) {
+          out[index] = null;
+          continue;
+        }
+        const size = Number(stat.size);
+        if (maxBytes > 0 && size > maxBytes) {
+          out[index] = ["x", rel, tag];
+          continue;
+        }
+        if (size === 0) {
+          out[index] = ["c", rel, tag, Buffer.alloc(0)];
+          continue;
+        }
+        const probeLength = Math.min(size, probeBytes);
+        const probe = Buffer.allocUnsafe(probeLength);
+        await readFull(handle, probe, 0, probeLength, 0);
+        if (probe.includes(0)) {
+          out[index] = ["x", rel, tag];
+          continue;
+        }
+        const content = Buffer.allocUnsafe(size);
+        probe.copy(content, 0, 0, probeLength);
+        if (size > probeLength) {
+          await readFull(handle, content, probeLength, size - probeLength, probeLength);
+        }
+        out[index] = ["c", rel, tag, content];
+      } catch {
+        out[index] = ["x", rel, tag];
+      } finally {
+        if (handle) {
+          try {
+            await handle.close();
+          } catch {}
+        }
+      }
+    }
+  });
+  await Promise.all(workers);
+  for (let i = 0; i < out.length; i += 1) {
+    if (out[i]) {
+      records.push(out[i]);
+    }
+  }
+};
+
+const countNewlines = (buffer) => {
+  let count = 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    if (buffer[i] === 10) {
+      count += 1;
+    }
+  }
+  return count;
+};
+
+const main = async () => {
+  walk();
+  await classify();
+  records.sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+
+  const excludedDirPaths = [];
+  const excludedFileEntries = [];
+  const includedFiles = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    if (record[0] === "D") {
+      excludedDirPaths.push(record[1]);
+    } else if (record[0] === "x") {
+      excludedFileEntries.push([record[2], record[1]]);
+    } else if (record[0] === "c") {
+      includedFiles.push(record);
+    }
+  }
+
+  const tempPath = `${outputPath}.concat-${process.pid}-${Date.now()}.tmp`;
+  const stream = fs.createWriteStream(tempPath);
+  let outputBytes = 0;
+  let outputLines = 0;
+  const write = async (chunk) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    outputBytes += buffer.length;
+    outputLines += countNewlines(buffer);
+    if (!stream.write(buffer)) {
+      await once(stream, "drain");
+    }
+  };
+
+  await write("// concatenate snapshot\n");
+  await write(`// root: ${targetArg}\n`);
+  await write("//\n");
+  await write(`// Included files (contents copied): ${includedFiles.length}\n`);
+  await write(`// Excluded files (names only):       ${excludedFileEntries.length}\n`);
+  await write(`// Excluded directories (pruned):     ${excludedDirPaths.length}\n`);
+  await write(`// Max file size for inclusion:       ${maxBytes} bytes (0 disables)\n`);
+  await write("//\n");
+  await write("// NOTE: Excluded directories are listed but NOT traversed; no child entries are present.\n\n");
+
+  await write("// === FILE TREE (PRUNED) ===\n");
+  await write("// .\n");
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    const rel = record[1];
+    const base = rel.slice(rel.lastIndexOf("/") + 1);
+    let depth = 0;
+    for (let j = 0; j < rel.length; j += 1) {
+      if (rel.charCodeAt(j) === 47) {
+        depth += 1;
+      }
+    }
+    const indent = " ".repeat(2 * (depth + 1));
+    if (record[0] === "D") {
+      await write(`// ${indent}${base}/  [excluded-dir]\n`);
+    } else if (record[0] === "d") {
+      await write(`// ${indent}${base}/\n`);
+    } else if (record[0] === "x") {
+      await write(`// ${indent}${base}  [excluded]\n`);
+    } else {
+      await write(`// ${indent}${base}\n`);
+    }
+  }
+  await write("\n");
+
+  await write("// === EXCLUDED DIRECTORIES (EXISTENCE ONLY; NOT SCANNED) ===\n");
+  if (excludedDirPaths.length) {
+    await write("// Listed alphabetically.\n");
+    for (let i = 0; i < excludedDirPaths.length; i += 1) {
+      await write(`//   - ${excludedDirPaths[i]}/\n`);
+    }
+  } else {
+    await write("// (none)\n");
+  }
+  await write("\n");
+
+  await write("// === EXCLUDED FILES (NAMES ONLY; OUTSIDE PRUNED DIRS) ===\n");
+  await write("// Grouped by extension with counts.\n");
+  if (excludedFileEntries.length) {
+    excludedFileEntries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+    for (let i = 0; i < excludedFileEntries.length;) {
+      const ext = excludedFileEntries[i][0];
+      let end = i + 1;
+      while (end < excludedFileEntries.length && excludedFileEntries[end][0] === ext) {
+        end += 1;
+      }
+      if (i > 0) {
+        await write("//\n");
+      }
+      await write(`// ${ext} (${end - i}):\n`);
+      for (let j = i; j < end; j += 1) {
+        await write(`//   - ${excludedFileEntries[j][1]}\n`);
+      }
+      i = end;
+    }
+  } else {
+    await write("// (none)\n");
+  }
+  await write("\n");
+
+  await write("// === INCLUDED FILE CONTENTS ===\n");
+  for (let i = 0; i < includedFiles.length; i += 1) {
+    await write(`\n// Contents of: "${includedFiles[i][1]}"\n`);
+    if (includedFiles[i][3].length) {
+      await write(includedFiles[i][3]);
+    }
+  }
+
+  stream.end();
+  await once(stream, "finish");
+
+  try {
+    await fsp.rename(tempPath, outputPath);
+  } catch {
+    await fsp.rm(outputPath, { force: true });
+    await fsp.rename(tempPath, outputPath);
+  }
+
+  process.stderr.write(`Wrote ${outputArg}: ${(outputBytes / 1024).toFixed(2)} KB, ${outputLines} lines\n`);
+};
+
+main().catch((error) => fail(error && error.message ? error.message : String(error)));
+NODE
+}
