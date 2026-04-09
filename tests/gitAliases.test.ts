@@ -130,7 +130,7 @@ const runGitAlias = (aliasCommand: string, refs: string[]): GitAliasRunResult =>
 
   fs.chmodSync(fakeGitPath, 0o755);
 
-const runnerScript = `
+  const runnerScript = `
 set -uo pipefail
 shopt -s expand_aliases
 ${normalizePathFunction}
