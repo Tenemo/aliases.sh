@@ -189,6 +189,7 @@ const createMixedFixture = (): string => {
   writeTextFile(fixtureRoot, "nested/node_modules/dep.js", "module.exports = 2;\n");
   writeTextFile(fixtureRoot, "nested/keep.txt", "keep me\n");
   writeTextFile(fixtureRoot, "docs/guide.md", "## Guide\n");
+  writeTextFile(fixtureRoot, "docs.schema.json", "{}\n");
   writeTextFile(fixtureRoot, "src/app.js", 'console.log("app");\n');
   writeTextFile(fixtureRoot, "src/empty.txt", "");
   writeTextFile(fixtureRoot, "src/with spaces.md", "spaced file\n");
@@ -261,7 +262,7 @@ describe("concat", () => {
     const includedContentsSection = readSection(output, includedContentsHeading);
 
     expect(readSummaryCount(output, "Included files (contents copied)")).toBe(6);
-    expect(readSummaryCount(output, "Excluded files (names only)")).toBe(5);
+    expect(readSummaryCount(output, "Excluded files (names only)")).toBe(6);
     expect(readSummaryCount(output, "Excluded directories (pruned)")).toBe(3);
 
     expect(treeSection).toContain("//   .git/  [excluded-dir]");
@@ -275,6 +276,7 @@ describe("concat", () => {
     expect(treeSection).toContain("//     .env  [excluded]");
     expect(treeSection).toContain("//   docs/");
     expect(treeSection).toContain("//     guide.md");
+    expect(treeSection).toContain("//   docs.schema.json  [excluded]");
     expect(treeSection).toContain("//   nested/");
     expect(treeSection).toContain("//     keep.txt");
     expect(treeSection).toContain("//   README.md");
@@ -300,6 +302,9 @@ describe("concat", () => {
         "// Grouped by extension with counts.",
         "// .env (1):",
         "//   - config/.env",
+        "//",
+        "// .json (1):",
+        "//   - docs.schema.json",
         "//",
         "// .png (1):",
         "//   - assets/logo.png",
@@ -338,6 +343,56 @@ describe("concat", () => {
     expect(includedContentsSection).not.toContain("stale temp artifact");
     expect(includedContentsSection).not.toContain("module.exports = 1;");
     expect(includedContentsSection).not.toContain("module.exports = 2;");
+  });
+
+  it("prunes common generated framework and cache directories", () => {
+    const fixtureRoot = createTempRoot();
+    const generatedDirectories = [
+      ".angular",
+      ".next",
+      ".netlify",
+      ".nuxt",
+      ".output",
+      ".parcel-cache",
+      ".react-router",
+      ".svelte-kit",
+      ".tmp",
+      ".turbo",
+      ".vercel",
+      "coverage",
+      "tmp",
+    ];
+
+    writeTextFile(fixtureRoot, "src/app.ts", "export const value = 1;\n");
+    for (const directory of generatedDirectories) {
+      writeTextFile(fixtureRoot, `${directory}/ignored.js`, "throw new Error('ignore');\n");
+    }
+
+    const result = runConcat(fixtureRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.output).not.toBeNull();
+
+    const output = result.output ?? "";
+    const treeSection = readSection(output, fileTreeHeading, excludedDirsHeading);
+    const excludedDirsSection = readSection(
+      output,
+      excludedDirsHeading,
+      excludedFilesHeading
+    );
+
+    expect(readSummaryCount(output, "Included files (contents copied)")).toBe(1);
+    expect(readSummaryCount(output, "Excluded files (names only)")).toBe(0);
+    expect(readSummaryCount(output, "Excluded directories (pruned)")).toBe(
+      generatedDirectories.length
+    );
+    expect(treeSection).toContain("//   src/");
+    expect(treeSection).toContain("//     app.ts");
+    expect(treeSection).not.toContain("ignored.js");
+    expect(readNonEmptyLines(excludedDirsSection)).toEqual([
+      "// Listed alphabetically.",
+      ...[...generatedDirectories].sort().map((directory) => `//   - ${directory}/`),
+    ]);
   });
 
   it("does not ingest a previous temp.txt snapshot when rerun in the same directory", () => {

@@ -2,25 +2,62 @@
 #
 # Default location on Windows: C:\Program Files\Git\etc\profile.d\aliases.sh
 # Default location on MacOS: ~/.zshrc
-# After updating, run `source ~/.zshrc` (Mac) or restart terminal (Windows) to apply.
+# After updating a loaded file, run `reload` to apply changes without restarting.
+
+__aliases_default_source_file() {
+    if [ "$(uname)" = "Darwin" ]; then
+        printf '%s\n' "$HOME/.zshrc"
+    else
+        printf '%s\n' "/c/Program Files/Git/etc/profile.d/aliases.sh"
+    fi
+}
+
+__aliases_current_source_file() {
+    if [ -n "${BASH_VERSION:-}" ] && [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+        local SOURCE_DIR
+        SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+        if [ -n "$SOURCE_DIR" ]; then
+            printf '%s/%s\n' "$SOURCE_DIR" "$(basename "${BASH_SOURCE[0]}")"
+            return 0
+        fi
+    fi
+
+    __aliases_default_source_file
+}
+
+__ALIASES_SOURCE_FILE="$(__aliases_current_source_file)"
+
+__aliases_source_file() {
+    if [ -n "${__ALIASES_SOURCE_FILE:-}" ] && [ -f "$__ALIASES_SOURCE_FILE" ]; then
+        printf '%s\n' "$__ALIASES_SOURCE_FILE"
+    else
+        __aliases_default_source_file
+    fi
+}
+
+__reload_aliases() {
+    local SRC
+    SRC="$(__aliases_source_file)"
+    if [ ! -f "$SRC" ]; then
+        echo "reload: aliases file not found: $SRC" >&2
+        return 1
+    fi
+
+    source "$SRC"
+}
+
+unalias reload 2>/dev/null
+alias reload='__reload_aliases'
 
 # It's aliases all the way down.
 unalias aliases 2>/dev/null
 aliases() {
-    if [ "$(uname)" = "Darwin" ]; then
-        local SRC="$HOME/.zshrc"
-        if [ -f "$SRC" ]; then
-            grep '^[[:space:]]*alias ' "$SRC" | sed 's/^[[:space:]]*alias[[:space:]]*//'
-        else
-            alias | sed 's/^alias //' | sort
-        fi
+    local SRC
+    SRC="$(__aliases_source_file)"
+    if [ -f "$SRC" ]; then
+        grep '^[[:space:]]*alias ' "$SRC" | sed 's/^[[:space:]]*alias[[:space:]]*//'
     else
-        local SRC="/c/Program Files/Git/etc/profile.d/aliases.sh"
-        if [ -f "$SRC" ]; then
-            grep '^[[:space:]]*alias ' "$SRC" | sed 's/^[[:space:]]*alias[[:space:]]*//'
-        else
-            alias | sed 's/^alias //' | sort
-        fi
+        alias | sed 's/^alias //' | sort
     fi
 }
 
@@ -367,12 +404,25 @@ const excludedDirectories = new Set([
   ".m2",
   ".cache",
   "temp",
+  "tmp",
+  ".tmp",
   ".npm-cache",
   ".react-router",
+  ".turbo",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".output",
+  ".vercel",
+  ".netlify",
+  ".parcel-cache",
+  ".angular",
+  ".astro",
 ]);
 const excludedFiles = new Set([
   "package-lock.json",
   "yarn.lock",
+  "docs.schema.json",
   "LICENSE",
   ".gitignore",
   "c_cpp_properties.json",
@@ -382,6 +432,8 @@ const excludedFiles = new Set([
   "AGENTS.md",
   ".env",
   "pnpm-lock.yaml",
+  "coverage-summary.json",
+
 ]);
 const excludedExtensions = new Set([
   "jpg",
