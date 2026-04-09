@@ -98,11 +98,44 @@ alias gcp='git cherry-pick'
 alias gco='git checkout'
 alias gcob='git checkout -b'
 alias gcoo='git fetch && git checkout'
-alias gdev='git checkout development && git pull origin development'
+
+# Resolve shared branch-name conventions without forcing a single default.
+_git_branch_exists() {
+    local BRANCH="$1"
+    git show-ref --verify --quiet "refs/heads/$BRANCH" >/dev/null 2>&1 || \
+        git show-ref --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null 2>&1
+}
+_git_resolve_named_branch() {
+    local BRANCH
+    for BRANCH in "$@"; do
+        if _git_branch_exists "$BRANCH"; then
+            printf '%s\n' "$BRANCH"
+            return 0
+        fi
+    done
+    printf '%s\n' "$1"
+}
+_git_checkout_pull_named_branch() {
+    local BRANCH
+    BRANCH="$(_git_resolve_named_branch "$@")"
+    git checkout "$BRANCH" && git pull origin "$BRANCH"
+}
+_git_pull_named_branch() {
+    local BRANCH
+    BRANCH="$(_git_resolve_named_branch "$@")"
+    git pull origin "$BRANCH"
+}
+_git_push_named_branch() {
+    local BRANCH
+    BRANCH="$(_git_resolve_named_branch "$@")"
+    git push origin "$BRANCH"
+}
+
+alias gdev='_git_checkout_pull_named_branch development dev'
 alias gstaging='git checkout staging && git pull origin staging'
 
-alias gmaster='git checkout master && git pull origin master'
-alias gmain='git checkout main && git pull origin main'
+alias gmaster='_git_checkout_pull_named_branch master main'
+alias gmain='_git_checkout_pull_named_branch main master'
 
 alias gc='git commit'
 alias gamend='git commit --amend --no-edit'
@@ -179,10 +212,10 @@ gdiffloc() {
 }
 
 alias gplo='git pull origin'
-alias gplod='git pull origin development'
+alias gplod='_git_pull_named_branch development dev'
 alias gplos='git pull origin staging'
-alias gplom='git pull origin master'
-alias gplomain='git pull origin main'
+alias gplom='_git_pull_named_branch master main'
+alias gplomain='_git_pull_named_branch main master'
 
 unalias gploh 2>/dev/null
 gploh() {
@@ -203,10 +236,10 @@ unalias gforce 2>/dev/null
 gforce() {
     _git_push_origin_current --force-with-lease
 }
-alias gpod='git push origin development'
+alias gpod='_git_push_named_branch development dev'
 alias gpos='git push origin staging'
-alias gpom='git push origin master'
-alias gpomain='git push origin main'
+alias gpom='_git_push_named_branch master main'
+alias gpomain='_git_push_named_branch main master'
 unalias gpoh 2>/dev/null
 gpoh() {
     _git_push_origin_current
