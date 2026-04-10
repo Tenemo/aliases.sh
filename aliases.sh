@@ -129,6 +129,7 @@ alias gla='git config -l | grep alias | cut -c 7-'
 
 alias gcl='git clone'
 alias ga='git add'
+alias gaa='git add .'
 alias gs='git status'
 alias gcp='git cherry-pick'
 
