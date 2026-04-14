@@ -311,7 +311,169 @@ gdl() {
     fi
 }
 
-alias gprune='git remote update origin --prune'
+_git_default_origin_branch() {
+    local REF
+    local BRANCH
+
+    REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || REF=""
+    BRANCH="${REF#origin/}"
+    if [ -n "$BRANCH" ] && [ "$BRANCH" != "$REF" ]; then
+        printf '%s\n' "$BRANCH"
+        return 0
+    fi
+
+    for BRANCH in main master development dev staging
+    do
+        if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+            printf '%s\n' "$BRANCH"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+_git_patch_id_for_range() {
+    git diff "$1" "$2" | git patch-id --stable | awk 'NR == 1 { print $1 }'
+}
+
+_git_patch_id_for_commit() {
+    git show --format= --patch "$1" | git patch-id --stable | awk 'NR == 1 { print $1 }'
+}
+
+_git_branch_matches_squash_merge() {
+    local BRANCH="$1"
+    local BASE_REF="$2"
+    local MERGE_BASE
+    local BRANCH_PATCH_ID
+    local COMMIT
+    local COMMIT_PATCH_ID
+
+    MERGE_BASE="$(git merge-base "$BRANCH" "$BASE_REF")" || return 1
+    BRANCH_PATCH_ID="$(_git_patch_id_for_range "$MERGE_BASE" "$BRANCH")"
+    [ -n "$BRANCH_PATCH_ID" ] || return 1
+
+    while IFS= read -r COMMIT
+    do
+        [ -n "$COMMIT" ] || continue
+        COMMIT_PATCH_ID="$(_git_patch_id_for_commit "$COMMIT")"
+        if [ "$COMMIT_PATCH_ID" = "$BRANCH_PATCH_ID" ]; then
+            return 0
+        fi
+    done <<EOF
+$(git rev-list --first-parent --no-merges "$MERGE_BASE..$BASE_REF")
+EOF
+
+    return 1
+}
+
+unalias gprune 2>/dev/null
+gprune() {
+    local DRY_RUN=0
+    local CURRENT_BRANCH
+    local DEFAULT_BRANCH
+    local DEFAULT_REF
+    local BRANCH
+    local UPSTREAM
+    local TRACK
+    local DELETE_MODE
+    local DELETED_COUNT=0
+    local KEPT_COUNT=0
+
+    case "${1:-}" in
+        "")
+            ;;
+        -n|--dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        *)
+            echo "Usage: gprune [--dry-run]" >&2
+            return 2
+            ;;
+    esac
+
+    if [ $# -gt 0 ]; then
+        echo "Usage: gprune [--dry-run]" >&2
+        return 2
+    fi
+
+    git remote update origin --prune || return $?
+
+    DEFAULT_BRANCH="$(_git_default_origin_branch)" || {
+        echo "gprune: could not determine the default branch for origin." >&2
+        return 1
+    }
+    DEFAULT_REF="origin/$DEFAULT_BRANCH"
+    CURRENT_BRANCH="$(git branch --show-current)"
+
+    while IFS='|' read -r BRANCH UPSTREAM TRACK
+    do
+        [ -n "$BRANCH" ] || continue
+
+        case "$UPSTREAM" in
+            origin/*)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        case "$TRACK" in
+            *"[gone]"*)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        if [ "$BRANCH" = "$CURRENT_BRANCH" ]; then
+            printf 'gprune: keeping %s (currently checked out)\n' "$BRANCH"
+            KEPT_COUNT=$((KEPT_COUNT + 1))
+            continue
+        fi
+
+        if [ "$BRANCH" = "$DEFAULT_BRANCH" ]; then
+            continue
+        fi
+
+        DELETE_MODE=""
+        if git merge-base --is-ancestor "$BRANCH" "$DEFAULT_REF" >/dev/null 2>&1; then
+            DELETE_MODE="merged"
+        elif _git_branch_matches_squash_merge "$BRANCH" "$DEFAULT_REF"; then
+            DELETE_MODE="squash-merged"
+        else
+            printf 'gprune: keeping %s (upstream gone, but not found on %s)\n' "$BRANCH" "$DEFAULT_REF"
+            KEPT_COUNT=$((KEPT_COUNT + 1))
+            continue
+        fi
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf 'gprune: would delete %s (%s into %s)\n' "$BRANCH" "$DELETE_MODE" "$DEFAULT_REF"
+        else
+            if [ "$DELETE_MODE" = "merged" ]; then
+                git branch -d "$BRANCH" || return $?
+            else
+                git branch -D "$BRANCH" || return $?
+            fi
+            printf 'gprune: deleted %s (%s into %s)\n' "$BRANCH" "$DELETE_MODE" "$DEFAULT_REF"
+        fi
+
+        DELETED_COUNT=$((DELETED_COUNT + 1))
+    done <<EOF
+$(git for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track)' refs/heads)
+EOF
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf 'gprune: %s branch(es) would be deleted.\n' "$DELETED_COUNT"
+    else
+        printf 'gprune: deleted %s branch(es).\n' "$DELETED_COUNT"
+    fi
+
+    if [ "$KEPT_COUNT" -gt 0 ]; then
+        printf 'gprune: kept %s branch(es).\n' "$KEPT_COUNT"
+    fi
+}
 
 if [ "$(uname)" != "Darwin" ]; then
     case "$TERM" in

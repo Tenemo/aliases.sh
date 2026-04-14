@@ -67,11 +67,14 @@ const writeTextFile = (rootDir: string, relativePath: string, contents: string):
   return absolutePath;
 };
 
-type GitAliasRunResult = {
-  logLines: string[];
+type CommandResult = {
   status: number | null;
   stderr: string;
   stdout: string;
+};
+
+type GitAliasRunResult = CommandResult & {
+  logLines: string[];
 };
 
 const fakeGitScript = `#!/usr/bin/env bash
@@ -176,6 +179,155 @@ ${aliasCommand}
   };
 };
 
+const appendTextFile = (rootDir: string, relativePath: string, contents: string): string => {
+  const absolutePath = path.join(rootDir, relativePath);
+  fs.mkdirSync(path.dirname(absolutePath), {
+    recursive: true,
+  });
+  fs.appendFileSync(absolutePath, contents, "utf8");
+  return absolutePath;
+};
+
+const runCommand = (
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {}
+): CommandResult => {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    encoding: "utf8",
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return {
+    status: result.status,
+    stderr: result.stderr,
+    stdout: result.stdout,
+  };
+};
+
+const runGitOrThrow = (cwd: string, args: string[]): string => {
+  const result = runCommand("git", args, {
+    cwd,
+  });
+
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `git ${args.join(" ")} failed in ${cwd}`,
+        `stdout:\n${result.stdout}`,
+        `stderr:\n${result.stderr}`,
+      ].join("\n\n")
+    );
+  }
+
+  return result.stdout;
+};
+
+const runAliasInDirectory = (workingDirectory: string, aliasCommand: string): CommandResult => {
+  const runnerScript = `
+set -uo pipefail
+shopt -s expand_aliases
+${normalizePathFunction}
+
+PROJECT_ROOT="$(normalize_path "$PROJECT_ROOT_PATH")"
+WORKING_DIRECTORY="$(normalize_path "$WORKING_DIRECTORY_PATH")"
+cd "$WORKING_DIRECTORY"
+
+source "$PROJECT_ROOT/aliases.sh"
+${aliasCommand}
+`;
+
+  return runCommand(bashExecutable, ["-lc", runnerScript], {
+    env: {
+      ...process.env,
+      PROJECT_ROOT_PATH: projectRoot,
+      WORKING_DIRECTORY_PATH: workingDirectory,
+    },
+  });
+};
+
+const commitFile = (
+  repoDir: string,
+  relativePath: string,
+  contents: string,
+  message: string
+): void => {
+  writeTextFile(repoDir, relativePath, contents);
+  runGitOrThrow(repoDir, ["add", relativePath]);
+  runGitOrThrow(repoDir, ["commit", "-m", message]);
+};
+
+const appendAndCommitFile = (
+  repoDir: string,
+  relativePath: string,
+  contents: string,
+  message: string
+): void => {
+  appendTextFile(repoDir, relativePath, contents);
+  runGitOrThrow(repoDir, ["add", relativePath]);
+  runGitOrThrow(repoDir, ["commit", "-m", message]);
+};
+
+const initializeGitPruneFixture = (): string => {
+  const tempRoot = createTempRoot();
+  const originDir = path.join(tempRoot, "origin.git");
+  const repoDir = path.join(tempRoot, "repo");
+
+  runGitOrThrow(tempRoot, ["init", "--bare", "--initial-branch=main", originDir]);
+  runGitOrThrow(tempRoot, ["clone", originDir, repoDir]);
+  runGitOrThrow(repoDir, ["config", "user.name", "test user"]);
+  runGitOrThrow(repoDir, ["config", "user.email", "test@example.com"]);
+  runGitOrThrow(repoDir, ["checkout", "-b", "main"]);
+  commitFile(repoDir, "README.md", "initial\n", "initial commit");
+  runGitOrThrow(repoDir, ["push", "-u", "origin", "main"]);
+  runGitOrThrow(repoDir, ["remote", "set-head", "origin", "main"]);
+
+  return repoDir;
+};
+
+const listLocalBranches = (repoDir: string): string[] => {
+  return runGitOrThrow(repoDir, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort();
+};
+
+const currentBranchName = (repoDir: string): string => {
+  return runGitOrThrow(repoDir, ["branch", "--show-current"]).trim();
+};
+
+const createBranchWithCommits = (
+  repoDir: string,
+  branchName: string,
+  commits: Array<{
+    append?: boolean;
+    message: string;
+    path: string;
+    contents: string;
+  }>
+): void => {
+  runGitOrThrow(repoDir, ["checkout", "-b", branchName, "main"]);
+
+  for (const commit of commits) {
+    if (commit.append) {
+      appendAndCommitFile(repoDir, commit.path, commit.contents, commit.message);
+    } else {
+      commitFile(repoDir, commit.path, commit.contents, commit.message);
+    }
+  }
+};
+
 afterEach(() => {
   while (tempRoots.length > 0) {
     const tempRoot = tempRoots.pop();
@@ -249,4 +401,180 @@ describe("git branch aliases", () => {
     expect(result.stderr).toBe("");
     expect(result.logLines).toEqual(expectedLogLines);
   });
+});
+
+describe("gprune", () => {
+  it("deletes only branches whose gone upstream work already landed on origin/main", () => {
+    const repoDir = initializeGitPruneFixture();
+
+    createBranchWithCommits(repoDir, "feature-merged", [
+      {
+        contents: "merged branch\n",
+        message: "add merged branch",
+        path: "feature-merged.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-merged"]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+    runGitOrThrow(repoDir, ["merge", "--no-ff", "feature-merged", "-m", "merge feature-merged"]);
+    runGitOrThrow(repoDir, ["push", "origin", "main"]);
+    runGitOrThrow(repoDir, ["push", "origin", "--delete", "feature-merged"]);
+
+    createBranchWithCommits(repoDir, "feature-squashed", [
+      {
+        contents: "squashed line one\n",
+        message: "add first squash commit",
+        path: "feature-squashed.txt",
+      },
+      {
+        append: true,
+        contents: "squashed line two\n",
+        message: "add second squash commit",
+        path: "feature-squashed.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-squashed"]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+    runGitOrThrow(repoDir, ["merge", "--squash", "feature-squashed"]);
+    runGitOrThrow(repoDir, ["commit", "-m", "squash feature-squashed"]);
+    runGitOrThrow(repoDir, ["push", "origin", "main"]);
+    runGitOrThrow(repoDir, ["push", "origin", "--delete", "feature-squashed"]);
+
+    createBranchWithCommits(repoDir, "feature-unmerged", [
+      {
+        contents: "unmerged branch\n",
+        message: "add unmerged branch",
+        path: "feature-unmerged.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-unmerged"]);
+    runGitOrThrow(repoDir, ["push", "origin", "--delete", "feature-unmerged"]);
+
+    createBranchWithCommits(repoDir, "feature-live", [
+      {
+        contents: "live branch\n",
+        message: "add live branch",
+        path: "feature-live.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-live"]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+
+    createBranchWithCommits(repoDir, "feature-local-only", [
+      {
+        contents: "local only branch\n",
+        message: "add local only branch",
+        path: "feature-local-only.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+
+    createBranchWithCommits(repoDir, "feature-current", [
+      {
+        contents: "current branch\n",
+        message: "add current branch",
+        path: "feature-current.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-current"]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+    runGitOrThrow(repoDir, ["push", "origin", "--delete", "feature-current"]);
+    runGitOrThrow(repoDir, ["checkout", "feature-current"]);
+
+    expect(listLocalBranches(repoDir)).toEqual([
+      "feature-current",
+      "feature-live",
+      "feature-local-only",
+      "feature-merged",
+      "feature-squashed",
+      "feature-unmerged",
+      "main",
+    ]);
+
+    const result = runAliasInDirectory(repoDir, "gprune");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "gprune: deleted feature-merged (merged into origin/main)"
+    );
+    expect(result.stdout).toContain(
+      "gprune: deleted feature-squashed (squash-merged into origin/main)"
+    );
+    expect(result.stdout).toContain(
+      "gprune: keeping feature-unmerged (upstream gone, but not found on origin/main)"
+    );
+    expect(result.stdout).toContain(
+      "gprune: keeping feature-current (currently checked out)"
+    );
+    expect(result.stdout).toContain("gprune: deleted 2 branch(es).");
+    expect(result.stdout).toContain("gprune: kept 2 branch(es).");
+    expect(listLocalBranches(repoDir)).toEqual([
+      "feature-current",
+      "feature-live",
+      "feature-local-only",
+      "feature-unmerged",
+      "main",
+    ]);
+    expect(currentBranchName(repoDir)).toBe("feature-current");
+  }, 30000);
+
+  it("supports dry-run mode without removing any local branches", () => {
+    const repoDir = initializeGitPruneFixture();
+
+    createBranchWithCommits(repoDir, "feature-merged", [
+      {
+        contents: "merged branch\n",
+        message: "add merged branch",
+        path: "feature-merged.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-merged"]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+    runGitOrThrow(repoDir, ["merge", "--no-ff", "feature-merged", "-m", "merge feature-merged"]);
+    runGitOrThrow(repoDir, ["push", "origin", "main"]);
+    runGitOrThrow(repoDir, ["push", "origin", "--delete", "feature-merged"]);
+
+    createBranchWithCommits(repoDir, "feature-squashed", [
+      {
+        contents: "squashed line one\n",
+        message: "add first squash commit",
+        path: "feature-squashed.txt",
+      },
+      {
+        append: true,
+        contents: "squashed line two\n",
+        message: "add second squash commit",
+        path: "feature-squashed.txt",
+      },
+    ]);
+    runGitOrThrow(repoDir, ["push", "-u", "origin", "feature-squashed"]);
+    runGitOrThrow(repoDir, ["checkout", "main"]);
+    runGitOrThrow(repoDir, ["merge", "--squash", "feature-squashed"]);
+    runGitOrThrow(repoDir, ["commit", "-m", "squash feature-squashed"]);
+    runGitOrThrow(repoDir, ["push", "origin", "main"]);
+    runGitOrThrow(repoDir, ["push", "origin", "--delete", "feature-squashed"]);
+
+    const branchesBefore = listLocalBranches(repoDir);
+    const result = runAliasInDirectory(repoDir, "gprune --dry-run");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "gprune: would delete feature-merged (merged into origin/main)"
+    );
+    expect(result.stdout).toContain(
+      "gprune: would delete feature-squashed (squash-merged into origin/main)"
+    );
+    expect(result.stdout).toContain("gprune: 2 branch(es) would be deleted.");
+    expect(listLocalBranches(repoDir)).toEqual(branchesBefore);
+  }, 30000);
+
+  it("rejects unexpected arguments", () => {
+    const repoDir = initializeGitPruneFixture();
+    const result = runAliasInDirectory(repoDir, "gprune --unexpected");
+
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Usage: gprune [--dry-run]");
+    expect(listLocalBranches(repoDir)).toEqual(["main"]);
+  }, 30000);
 });
