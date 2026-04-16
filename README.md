@@ -12,6 +12,41 @@ A tiny static site that publishes my curated bash aliases and renders the real [
 - `src/injectAliases.ts` inlines the Highlight.js theme and renders the real `aliases.sh` content at build/dev time.
 - The built site is static and does not include runtime browser JavaScript.
 - `concat` is a Bash wrapper over an inline Node engine at the end of `aliases.sh`.
+- `concat` supports `--exclude` with quoted `.gitignore`-like patterns, and one `--exclude` can take multiple patterns.
+
+### Concat examples
+
+Quote glob patterns so your shell does not expand them before `concat` sees them.
+
+```bash
+# Snapshot the current directory into temp.txt
+concat .
+
+# Snapshot a specific subdirectory
+concat ./src
+
+# Exclude a generated directory anywhere in the tree
+concat --exclude 'generated/'
+
+# Exclude all snapshot files
+concat --exclude '**/*.snap'
+
+# Exclude only the root README.md
+concat --exclude '/README.md'
+
+# Pass multiple patterns after a single --exclude
+concat --exclude 'generated/' '**/*.md'
+
+# Use a bash array as the pattern list
+exclude_patterns=('generated/' '**/*.md')
+concat --exclude "${exclude_patterns[@]}"
+
+# Exclude test files and coverage output together
+concat . --exclude '**/*.test.ts' 'coverage/'
+
+# Combine root-anchored, file, and directory exclusions
+concat ./src --exclude 'generated/' '**/*.snap' '/README.md'
+```
 
 ### Local development
 

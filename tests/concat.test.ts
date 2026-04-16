@@ -105,15 +105,24 @@ TARGET_ROOT="$(normalize_path "$TARGET_ROOT_PATH")"
 
 cd "$TARGET_ROOT"
 source "$PROJECT_ROOT/aliases.sh"
-concat "$CONCAT_ARG"
+CONCAT_ARGS=()
+
+if [ -n "\${CONCAT_ARGS_PAYLOAD:-}" ]; then
+  while IFS= read -r arg; do
+    CONCAT_ARGS+=("$arg")
+  done <<< "$CONCAT_ARGS_PAYLOAD"
+fi
+
+concat "\${CONCAT_ARGS[@]}"
 `;
 
-const runConcat = (targetRoot: string, concatArg = "."): ConcatRunResult => {
+const runConcat = (targetRoot: string, concatArg: string | string[] = "."): ConcatRunResult => {
+  const concatArgs = Array.isArray(concatArg) ? concatArg : [concatArg];
   const result = spawnSync(bashExecutable, ["-lc", concatRunnerScript], {
     encoding: "utf8",
     env: {
       ...process.env,
-      CONCAT_ARG: concatArg,
+      CONCAT_ARGS_PAYLOAD: concatArgs.join("\n"),
       PROJECT_ROOT_PATH: projectRoot,
       TARGET_ROOT_PATH: targetRoot,
     },
@@ -420,5 +429,158 @@ describe("concat", () => {
       '// Contents of: "src/app.js"\nconsole.log("rerun");'
     );
     expect(includedContentsSection).not.toContain('Contents of: "temp.txt"');
+  });
+
+  it("supports custom gitignore-like exclude globs for files and directories", () => {
+    const fixtureRoot = createTempRoot();
+
+    writeTextFile(fixtureRoot, "README.md", "# Root README\n");
+    writeTextFile(fixtureRoot, "nested/README.md", "# Nested README\n");
+    writeTextFile(fixtureRoot, "src/app.ts", "export const app = 1;\n");
+    writeTextFile(fixtureRoot, "src/app.test.ts", "export const test = 1;\n");
+    writeTextFile(fixtureRoot, "generated/root.ts", "export const generatedRoot = 1;\n");
+    writeTextFile(fixtureRoot, "nested/generated/child.ts", "export const generatedChild = 1;\n");
+    writeTextFile(fixtureRoot, "docs/guide.md", "# Guide\n");
+
+    const result = runConcat(fixtureRoot, [
+      ".",
+      "--exclude",
+      "/README.md",
+      "generated/",
+      "**/*.test.ts",
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.output).not.toBeNull();
+
+    const output = result.output ?? "";
+    const treeSection = readSection(output, fileTreeHeading, excludedDirsHeading);
+    const excludedDirsSection = readSection(
+      output,
+      excludedDirsHeading,
+      excludedFilesHeading
+    );
+    const excludedFilesSection = readSection(
+      output,
+      excludedFilesHeading,
+      includedContentsHeading
+    );
+    const includedContentsSection = readSection(output, includedContentsHeading);
+
+    expect(readSummaryCount(output, "Included files (contents copied)")).toBe(3);
+    expect(readSummaryCount(output, "Excluded files (names only)")).toBe(2);
+    expect(readSummaryCount(output, "Excluded directories (pruned)")).toBe(2);
+
+    expect(treeSection).toContain("//   README.md  [excluded]");
+    expect(treeSection).toContain("//   docs/");
+    expect(treeSection).toContain("//     guide.md");
+    expect(treeSection).toContain("//   generated/  [excluded-dir]");
+    expect(treeSection).toContain("//   nested/");
+    expect(treeSection).toContain("//     README.md");
+    expect(treeSection).toContain("//     generated/  [excluded-dir]");
+    expect(treeSection).toContain("//   src/");
+    expect(treeSection).toContain("//     app.test.ts  [excluded]");
+    expect(treeSection).toContain("//     app.ts");
+    expect(treeSection).not.toContain("generated/root.ts");
+    expect(treeSection).not.toContain("nested/generated/child.ts");
+
+    expect(readNonEmptyLines(excludedDirsSection)).toEqual([
+      "// Listed alphabetically.",
+      "//   - generated/",
+      "//   - nested/generated/",
+    ]);
+
+    expect(excludedFilesSection.trim()).toBe(
+      [
+        "// Grouped by extension with counts.",
+        "// .md (1):",
+        "//   - README.md",
+        "//",
+        "// .ts (1):",
+        "//   - src/app.test.ts",
+      ].join("\n")
+    );
+
+    expect(includedContentsSection).toContain(
+      '// Contents of: "docs/guide.md"\n# Guide\n'
+    );
+    expect(includedContentsSection).toContain(
+      '// Contents of: "nested/README.md"\n# Nested README\n'
+    );
+    expect(includedContentsSection).toContain(
+      '// Contents of: "src/app.ts"\nexport const app = 1;'
+    );
+    expect(includedContentsSection).not.toContain('Contents of: "README.md"');
+    expect(includedContentsSection).not.toContain('Contents of: "generated/root.ts"');
+    expect(includedContentsSection).not.toContain('Contents of: "nested/generated/child.ts"');
+    expect(includedContentsSection).not.toContain('Contents of: "src/app.test.ts"');
+  });
+
+  it("supports repeated --exclude flags with the default current directory", () => {
+    const fixtureRoot = createTempRoot();
+
+    writeTextFile(fixtureRoot, "README.md", "# Root README\n");
+    writeTextFile(fixtureRoot, "src/app.ts", "export const app = 1;\n");
+    writeTextFile(fixtureRoot, "src/app.test.ts", "export const test = 1;\n");
+    writeTextFile(fixtureRoot, "generated/root.ts", "export const generatedRoot = 1;\n");
+
+    const result = runConcat(fixtureRoot, [
+      "--exclude",
+      "generated/",
+      "--exclude",
+      "**/*.test.ts",
+      "/README.md",
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.output).not.toBeNull();
+
+    const output = result.output ?? "";
+    const treeSection = readSection(output, fileTreeHeading, excludedDirsHeading);
+    const includedContentsSection = readSection(output, includedContentsHeading);
+
+    expect(readSummaryCount(output, "Included files (contents copied)")).toBe(1);
+    expect(readSummaryCount(output, "Excluded files (names only)")).toBe(2);
+    expect(readSummaryCount(output, "Excluded directories (pruned)")).toBe(1);
+
+    expect(treeSection).toContain("//   README.md  [excluded]");
+    expect(treeSection).toContain("//   generated/  [excluded-dir]");
+    expect(treeSection).toContain("//   src/");
+    expect(treeSection).toContain("//     app.test.ts  [excluded]");
+    expect(treeSection).toContain("//     app.ts");
+    expect(includedContentsSection).toContain(
+      '// Contents of: "src/app.ts"\nexport const app = 1;'
+    );
+    expect(includedContentsSection).not.toContain('Contents of: "README.md"');
+    expect(includedContentsSection).not.toContain('Contents of: "generated/root.ts"');
+    expect(includedContentsSection).not.toContain('Contents of: "src/app.test.ts"');
+  });
+
+  it("returns exit code 2 when --exclude is provided without any patterns", () => {
+    const fixtureRoot = createTempRoot();
+
+    writeTextFile(fixtureRoot, "src/app.ts", "export const app = 1;\n");
+
+    const result = runConcat(fixtureRoot, [".", "--exclude"]);
+
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("concat: --exclude requires at least one pattern");
+    expect(result.output).toBeNull();
+  });
+
+  it("fails fast on unsupported negated exclude globs", () => {
+    const fixtureRoot = createTempRoot();
+
+    writeTextFile(fixtureRoot, "src/app.ts", "export const app = 1;\n");
+
+    const result = runConcat(fixtureRoot, [".", "--exclude", "!src/app.ts"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(
+      "concat: negated exclude patterns are not supported: !src/app.ts"
+    );
+    expect(result.output).toBeNull();
   });
 });

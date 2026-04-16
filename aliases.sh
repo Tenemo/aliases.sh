@@ -70,8 +70,70 @@ alias ll='ls -l'
 
 # For working with LLMs
 concat() {
-    local DIRECTORY_TO_SEARCH="${1:-./}"
+    local DIRECTORY_TO_SEARCH="./"
     local OUTPUT_FILE="temp.txt"
+    local DIRECTORY_SET=0
+    local EXPECTING_EXCLUDE_PATTERN=0
+    local EXCLUDE_PATTERN_COUNT=0
+    local ARG
+    local -a EXCLUDE_PATTERNS=()
+
+    while [ "$#" -gt 0 ]; do
+        ARG="$1"
+        shift
+
+        if [ "$EXPECTING_EXCLUDE_PATTERN" -eq 1 ]; then
+            case "$ARG" in
+                --exclude)
+                    if [ "$EXCLUDE_PATTERN_COUNT" -eq 0 ]; then
+                        echo "concat: --exclude requires at least one pattern" >&2
+                        return 2
+                    fi
+                    EXCLUDE_PATTERN_COUNT=0
+                    continue
+                    ;;
+                --)
+                    if [ "$EXCLUDE_PATTERN_COUNT" -eq 0 ]; then
+                        echo "concat: --exclude requires at least one pattern" >&2
+                        return 2
+                    fi
+                    EXPECTING_EXCLUDE_PATTERN=0
+                    EXCLUDE_PATTERN_COUNT=0
+                    continue
+                    ;;
+            esac
+
+            EXCLUDE_PATTERNS+=("$ARG")
+            EXCLUDE_PATTERN_COUNT=$((EXCLUDE_PATTERN_COUNT + 1))
+            continue
+        fi
+
+        case "$ARG" in
+            --exclude)
+                EXPECTING_EXCLUDE_PATTERN=1
+                EXCLUDE_PATTERN_COUNT=0
+                ;;
+            --)
+                ;;
+            -*)
+                echo "concat: unknown option: $ARG" >&2
+                return 2
+                ;;
+            *)
+                if [ "$DIRECTORY_SET" -eq 0 ]; then
+                    DIRECTORY_TO_SEARCH="$ARG"
+                    DIRECTORY_SET=1
+                else
+                    EXCLUDE_PATTERNS+=("$ARG")
+                fi
+                ;;
+        esac
+    done
+
+    if [ "$EXPECTING_EXCLUDE_PATTERN" -eq 1 ] && [ "$EXCLUDE_PATTERN_COUNT" -eq 0 ]; then
+        echo "concat: --exclude requires at least one pattern" >&2
+        return 2
+    fi
 
     if [ ! -d "$DIRECTORY_TO_SEARCH" ]; then
         echo "concat: directory not found: $DIRECTORY_TO_SEARCH" >&2
@@ -83,7 +145,7 @@ concat() {
         return 1
     fi
 
-    __concat_node "$DIRECTORY_TO_SEARCH" "$OUTPUT_FILE"
+    __concat_node "$DIRECTORY_TO_SEARCH" "$OUTPUT_FILE" "${EXCLUDE_PATTERNS[@]}"
 }
 
 alias i='npm install'
@@ -529,7 +591,26 @@ if type __git_complete >/dev/null 2>&1; then
 fi
 
 __concat_node() {
-    command node - "$1" "$2" <<'NODE'
+    local TARGET_ARG="$1"
+    local OUTPUT_ARG="$2"
+    local CONCAT_NODE_HAS_EXCLUDES="0"
+    local CONCAT_NODE_EXCLUDE_PATTERNS=""
+    local PATTERN
+
+    shift 2
+
+    if [ "$#" -gt 0 ]; then
+        CONCAT_NODE_HAS_EXCLUDES="1"
+        CONCAT_NODE_EXCLUDE_PATTERNS="$1"
+        shift
+
+        for PATTERN in "$@"; do
+            CONCAT_NODE_EXCLUDE_PATTERNS="${CONCAT_NODE_EXCLUDE_PATTERNS}
+${PATTERN}"
+        done
+    fi
+
+    CONCAT_NODE_HAS_EXCLUDES="$CONCAT_NODE_HAS_EXCLUDES" CONCAT_NODE_EXCLUDE_PATTERNS="$CONCAT_NODE_EXCLUDE_PATTERNS" command node - "$TARGET_ARG" "$OUTPUT_ARG" <<'NODE'
 const { once } = require("node:events");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -538,6 +619,9 @@ const path = require("node:path");
 
 const targetArg = process.argv[2] || ".";
 const outputArg = process.argv[3] || "temp.txt";
+const customExcludePatterns = process.env.CONCAT_NODE_HAS_EXCLUDES === "1"
+  ? (process.env.CONCAT_NODE_EXCLUDE_PATTERNS || "").split(/\n/).map((pattern) => pattern.replace(/\r$/, ""))
+  : [];
 const root = path.resolve(process.cwd(), targetArg);
 const outputPath = path.resolve(process.cwd(), outputArg);
 const maxBytes = 2097152;
@@ -646,6 +730,62 @@ const extTag = (name) => {
   return [ext, `.${ext}`];
 };
 
+const compileCustomExcludePattern = (rawPattern) => {
+  const pattern = rawPattern.replace(/\\/g, "/").trim();
+  if (!pattern) {
+    fail("concat: exclude patterns cannot be empty");
+  }
+  if (pattern.startsWith("!")) {
+    fail(`concat: negated exclude patterns are not supported: ${rawPattern}`);
+  }
+
+  let normalized = pattern;
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+
+  const directoryOnly = normalized.endsWith("/");
+  if (directoryOnly) {
+    normalized = normalized.slice(0, -1);
+  }
+
+  const anchored = normalized.startsWith("/");
+  if (anchored) {
+    normalized = normalized.slice(1);
+  }
+
+  if (!normalized) {
+    fail(`concat: invalid exclude pattern: ${rawPattern}`);
+  }
+
+  const glob = !anchored && !normalized.includes("/") ? `**/${normalized}` : normalized;
+
+  return {
+    directoryOnly,
+    glob,
+    recursiveDirectoryGlob: glob.endsWith("/**") ? glob.slice(0, -3) : null,
+  };
+};
+
+const customExcludeRules = customExcludePatterns.map(compileCustomExcludePattern);
+
+const matchesCustomExclude = (rel, isDirectory) => {
+  for (let i = 0; i < customExcludeRules.length; i += 1) {
+    const rule = customExcludeRules[i];
+    if (rule.directoryOnly && !isDirectory) {
+      continue;
+    }
+    if (path.matchesGlob(rel, rule.glob)) {
+      return true;
+    }
+    if (isDirectory && rule.recursiveDirectoryGlob && path.matchesGlob(rel, rule.recursiveDirectoryGlob)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const readFull = async (handle, buffer, offset, length, position) => {
   let total = 0;
   while (total < length) {
@@ -667,7 +807,7 @@ const walk = () => {
       const fullPath = path.join(dir, entry.name);
       const rel = relPath(fullPath);
       if (entry.isDirectory()) {
-        if (excludedDirectories.has(entry.name)) {
+        if (excludedDirectories.has(entry.name) || matchesCustomExclude(rel, true)) {
           records.push(["D", rel]);
         } else {
           records.push(["d", rel]);
@@ -679,7 +819,7 @@ const walk = () => {
         continue;
       }
       const [ext, tag] = extTag(entry.name);
-      if (excludedFiles.has(entry.name) || (ext && excludedExtensions.has(ext))) {
+      if (excludedFiles.has(entry.name) || (ext && excludedExtensions.has(ext)) || matchesCustomExclude(rel, false)) {
         records.push(["x", rel, tag]);
         continue;
       }
