@@ -354,6 +354,60 @@ describe("concat", () => {
     expect(includedContentsSection).not.toContain("module.exports = 2;");
   });
 
+  it("supports wildcard entries in the default excluded file list", () => {
+    const fixtureRoot = createTempRoot();
+
+    writeTextFile(fixtureRoot, "app.tsbuildinfo.json", '{"excluded": "root"}\n');
+    writeTextFile(fixtureRoot, "nested/build.tsbuildinfo.json", '{"excluded": "nested"}\n');
+    writeTextFile(fixtureRoot, "src/app.ts", "export const app = 1;\n");
+    writeTextFile(fixtureRoot, "src/tsbuildinfo.json", '{"included": true}\n');
+
+    const result = runConcat(fixtureRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.output).not.toBeNull();
+
+    const output = result.output ?? "";
+    const treeSection = readSection(output, fileTreeHeading, excludedDirsHeading);
+    const excludedFilesSection = readSection(
+      output,
+      excludedFilesHeading,
+      includedContentsHeading
+    );
+    const includedContentsSection = readSection(output, includedContentsHeading);
+
+    expect(readSummaryCount(output, "Included files (contents copied)")).toBe(2);
+    expect(readSummaryCount(output, "Excluded files (names only)")).toBe(2);
+
+    expect(treeSection).toContain("//   app.tsbuildinfo.json  [excluded]");
+    expect(treeSection).toContain("//     build.tsbuildinfo.json  [excluded]");
+    expect(treeSection).toContain("//     app.ts");
+    expect(treeSection).toContain("//     tsbuildinfo.json");
+
+    expect(excludedFilesSection.trim()).toBe(
+      [
+        "// Grouped by extension with counts.",
+        "// .json (2):",
+        "//   - app.tsbuildinfo.json",
+        "//   - nested/build.tsbuildinfo.json",
+      ].join("\n")
+    );
+
+    expect(includedContentsSection).toContain(
+      '// Contents of: "src/app.ts"\nexport const app = 1;'
+    );
+    expect(includedContentsSection).toContain(
+      '// Contents of: "src/tsbuildinfo.json"\n{"included": true}'
+    );
+    expect(includedContentsSection).not.toContain('Contents of: "app.tsbuildinfo.json"');
+    expect(includedContentsSection).not.toContain(
+      'Contents of: "nested/build.tsbuildinfo.json"'
+    );
+    expect(includedContentsSection).not.toContain('"excluded": "root"');
+    expect(includedContentsSection).not.toContain('"excluded": "nested"');
+  });
+
   it("prunes common generated framework and cache directories", () => {
     const fixtureRoot = createTempRoot();
     const generatedDirectories = [

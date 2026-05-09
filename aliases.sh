@@ -680,7 +680,8 @@ const excludedFiles = new Set([
   ".env",
   "pnpm-lock.yaml",
   "coverage-summary.json",
-
+  "coverage-badge.json",
+  "*.tsbuildinfo.json",
 ]);
 const excludedExtensions = new Set([
   "jpg",
@@ -767,7 +768,34 @@ const compileCustomExcludePattern = (rawPattern) => {
   };
 };
 
+const hasGlobSyntax = (pattern) => (
+  pattern.includes("*") ||
+  pattern.includes("?") ||
+  pattern.includes("[") ||
+  pattern.includes("]") ||
+  pattern.includes("{") ||
+  pattern.includes("}")
+);
+
+const defaultExcludedFileRules = Array.from(excludedFiles)
+  .filter(hasGlobSyntax)
+  .map(compileCustomExcludePattern);
 const customExcludeRules = customExcludePatterns.map(compileCustomExcludePattern);
+
+const matchesDefaultExcludedFile = (rel, name) => {
+  if (excludedFiles.has(name)) {
+    return true;
+  }
+
+  for (let i = 0; i < defaultExcludedFileRules.length; i += 1) {
+    const rule = defaultExcludedFileRules[i];
+    if (!rule.directoryOnly && path.matchesGlob(rel, rule.glob)) {
+      return true;
+    }
+  }
+
+  return false;
+};
 
 const matchesCustomExclude = (rel, isDirectory) => {
   for (let i = 0; i < customExcludeRules.length; i += 1) {
@@ -819,7 +847,7 @@ const walk = () => {
         continue;
       }
       const [ext, tag] = extTag(entry.name);
-      if (excludedFiles.has(entry.name) || (ext && excludedExtensions.has(ext)) || matchesCustomExclude(rel, false)) {
+      if (matchesDefaultExcludedFile(rel, entry.name) || (ext && excludedExtensions.has(ext)) || matchesCustomExclude(rel, false)) {
         records.push(["x", rel, tag]);
         continue;
       }
