@@ -665,6 +665,7 @@ const excludedDirectories = new Set([
   ".parcel-cache",
   ".angular",
   ".astro",
+  ".cargo-home",
 ]);
 const excludedFiles = new Set([
   "package-lock.json",
@@ -681,6 +682,7 @@ const excludedFiles = new Set([
   "pnpm-lock.yaml",
   "coverage-summary.json",
   "coverage-badge.json",
+  "*.tsbuildinfo",
   "*.tsbuildinfo.json",
 ]);
 const excludedExtensions = new Set([
