@@ -295,6 +295,21 @@ const initializeGitPruneFixture = (): string => {
   return repoDir;
 };
 
+const initializeGitDiffFixture = (): string => {
+  const temporaryRoot = createTempRoot();
+  const repositoryDirectory = path.join(temporaryRoot, "repo");
+
+  fs.mkdirSync(repositoryDirectory, {
+    recursive: true,
+  });
+  runGitOrThrow(repositoryDirectory, ["init", "--initial-branch=main"]);
+  runGitOrThrow(repositoryDirectory, ["config", "user.name", "test user"]);
+  runGitOrThrow(repositoryDirectory, ["config", "user.email", "test@example.com"]);
+  commitFile(repositoryDirectory, "tracked.txt", "tracked line\n", "initial commit");
+
+  return repositoryDirectory;
+};
+
 const listLocalBranches = (repoDir: string): string[] => {
   return runGitOrThrow(repoDir, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
     .split(/\r?\n/)
@@ -576,5 +591,65 @@ describe("gprune", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("Usage: gprune [--dry-run]");
     expect(listLocalBranches(repoDir)).toEqual(["main"]);
+  }, 30000);
+});
+
+describe("gdiff and gdiffloc", () => {
+  it("includes new unstaged files without changing the real workspace state", () => {
+    const repositoryDirectory = initializeGitDiffFixture();
+    appendTextFile(repositoryDirectory, "tracked.txt", "tracked addition\n");
+    writeTextFile(repositoryDirectory, "notes/new file.txt", "alpha\nbeta\ngamma\n");
+    writeTextFile(repositoryDirectory, "pnpm-lock.yaml", "lockfile line\n");
+
+    const statusBefore = runGitOrThrow(repositoryDirectory, [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+    ]);
+    const cachedDiffBefore = runGitOrThrow(repositoryDirectory, ["diff", "--cached", "--stat"]);
+    const branchBefore = currentBranchName(repositoryDirectory);
+
+    const lineCountResult = runAliasInDirectory(repositoryDirectory, "gdiffloc");
+    const wordDiffResult = runAliasInDirectory(repositoryDirectory, "gdiff");
+
+    expect(lineCountResult.status).toBe(0);
+    expect(lineCountResult.stderr).toBe("");
+    expect(lineCountResult.stdout).toContain("2 files changed");
+    expect(lineCountResult.stdout).toContain("4 insertions(+)");
+
+    expect(wordDiffResult.status).toBe(0);
+    expect(wordDiffResult.stderr).toBe("");
+    expect(wordDiffResult.stdout).toContain("diff --git a/notes/new file.txt b/notes/new file.txt");
+    expect(wordDiffResult.stdout).toContain("new file mode");
+    expect(wordDiffResult.stdout).toContain("{+alpha");
+    expect(wordDiffResult.stdout).not.toContain("pnpm-lock.yaml");
+
+    expect(
+      runGitOrThrow(repositoryDirectory, ["status", "--porcelain=v1", "--untracked-files=all"])
+    ).toBe(statusBefore);
+    expect(runGitOrThrow(repositoryDirectory, ["diff", "--cached", "--stat"])).toBe(
+      cachedDiffBefore
+    );
+    expect(currentBranchName(repositoryDirectory)).toBe(branchBefore);
+    expect(fs.existsSync(path.join(repositoryDirectory, "temp"))).toBe(false);
+  }, 30000);
+
+  it("keeps an existing current-directory temp folder intact", () => {
+    const repositoryDirectory = initializeGitDiffFixture();
+    const temporaryDirectory = path.join(repositoryDirectory, "temp");
+
+    commitFile(repositoryDirectory, ".gitignore", "temp/\n", "ignore temp directory");
+    fs.mkdirSync(temporaryDirectory);
+    writeTextFile(repositoryDirectory, "new-file.txt", "visible line\n");
+    writeTextFile(repositoryDirectory, "temp/keep.txt", "keep\n");
+
+    const result = runAliasInDirectory(repositoryDirectory, "gdiffloc");
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("1 file changed");
+    expect(result.stdout).toContain("1 insertion(+)");
+    expect(fs.readFileSync(path.join(temporaryDirectory, "keep.txt"), "utf8")).toBe("keep\n");
+    expect(fs.readdirSync(temporaryDirectory)).toEqual(["keep.txt"]);
   }, 30000);
 });

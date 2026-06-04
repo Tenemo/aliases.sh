@@ -58,6 +58,10 @@ const createTempRoot = (): string => {
   return tempRoot;
 };
 
+const stripTerminalClearSequences = (output: string): string => {
+  return output.replace(/\u001B\[H\u001B\[2J\u001B\[3J/g, "");
+};
+
 afterEach(() => {
   while (tempRoots.length > 0) {
     const tempRoot = tempRoots.pop();
@@ -75,6 +79,60 @@ type ReloadRunResult = {
   status: number | null;
   stderr: string;
   stdout: string;
+};
+
+const writeTextFile = (rootDirectory: string, relativePath: string, contents: string): string => {
+  const absolutePath = path.join(rootDirectory, relativePath);
+
+  fs.mkdirSync(path.dirname(absolutePath), {
+    recursive: true,
+  });
+  fs.writeFileSync(absolutePath, contents, "utf8");
+
+  return absolutePath;
+};
+
+const createFakeCurl = (rootDirectory: string): string => {
+  const fakeCurlPath = writeTextFile(
+    rootDirectory,
+    "bin/curl",
+    `#!/usr/bin/env bash
+set -u
+
+OUTPUT_FILE=""
+REQUEST_URL=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      shift
+      OUTPUT_FILE="\${1:-}"
+      ;;
+    -*)
+      ;;
+    *)
+      REQUEST_URL="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ "$REQUEST_URL" != "https://aliases.sh/raw" ]; then
+  echo "unexpected URL: $REQUEST_URL" >&2
+  exit 22
+fi
+if [ -z "$OUTPUT_FILE" ]; then
+  echo "missing output file" >&2
+  exit 2
+fi
+
+cp -- "$FAKE_RAW_ALIASES_FILE" "$OUTPUT_FILE"
+`
+  );
+
+  fs.chmodSync(fakeCurlPath, 0o755);
+
+  return path.dirname(fakeCurlPath);
 };
 
 const reloadRunnerScript = `
@@ -110,6 +168,38 @@ fi
 __reload_probe
 `;
 
+const updateAliasesRunnerScript = `
+set -uo pipefail
+shopt -s expand_aliases
+
+normalize_path() {
+  local input_path="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$input_path"
+  else
+    printf '%s' "$input_path"
+  fi
+}
+
+ALIASES_FILE="$(normalize_path "$ALIASES_FILE_PATH")"
+FAKE_CURL_ROOT="$(normalize_path "$FAKE_CURL_ROOT_PATH")"
+export FAKE_RAW_ALIASES_FILE="$(normalize_path "$FAKE_RAW_ALIASES_FILE_PATH")"
+PATH="$FAKE_CURL_ROOT:$PATH"
+
+source "$ALIASES_FILE"
+if ! alias updatealiases >/dev/null; then
+  echo "updatealiases alias is not defined" >&2
+  exit 1
+fi
+alias __update_aliases_probe='printf before'
+updatealiases
+UPDATE_STATUS=$?
+if [ "$UPDATE_STATUS" -ne 0 ]; then
+  exit "$UPDATE_STATUS"
+fi
+__update_aliases_probe
+`;
+
 const runReloadProbe = (aliasesFile: string, workRoot: string): ReloadRunResult => {
   const result = spawnSync(bashExecutable, ["-lc", reloadRunnerScript], {
     encoding: "utf8",
@@ -117,6 +207,34 @@ const runReloadProbe = (aliasesFile: string, workRoot: string): ReloadRunResult 
       ...process.env,
       ALIASES_FILE_PATH: aliasesFile,
       WORK_ROOT_PATH: workRoot,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return {
+    status: result.status,
+    stderr: result.stderr,
+    stdout: result.stdout,
+  };
+};
+
+const runUpdateAliasesProbe = (
+  aliasesFile: string,
+  fakeCurlRoot: string,
+  fakeRawAliasesFile: string
+): ReloadRunResult => {
+  const result = spawnSync(bashExecutable, ["-lc", updateAliasesRunnerScript], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ALIASES_FILE_PATH: aliasesFile,
+      FAKE_CURL_ROOT_PATH: fakeCurlRoot,
+      FAKE_RAW_ALIASES_FILE_PATH: fakeRawAliasesFile,
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -145,5 +263,54 @@ describe("reload alias", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe("after");
+  });
+
+  it("updates the sourced aliases file from the live raw URL and reloads it", () => {
+    const tempRoot = createTempRoot();
+    const aliasesFile = path.join(tempRoot, "aliases.sh");
+    const rawAliasesFile = path.join(tempRoot, "raw-aliases.sh");
+    const aliasesContent = fs.readFileSync(path.join(projectRoot, "aliases.sh"), "utf-8");
+    const rawAliasesContent = `${aliasesContent}\nalias __update_aliases_probe='printf after'\n`;
+    const fakeCurlRoot = createFakeCurl(tempRoot);
+
+    fs.writeFileSync(aliasesFile, aliasesContent, "utf8");
+    fs.writeFileSync(rawAliasesFile, rawAliasesContent, "utf8");
+
+    const result = runUpdateAliasesProbe(aliasesFile, fakeCurlRoot, rawAliasesFile);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe("after");
+    expect(fs.readFileSync(aliasesFile, "utf8")).toBe(rawAliasesContent);
+    expect(
+      fs
+        .readdirSync(tempRoot)
+        .filter((fileName) => fileName.includes(".download.") || fileName.includes(".backup."))
+    ).toEqual([]);
+  });
+
+  it("rejects invalid raw downloads without replacing the aliases file", () => {
+    const tempRoot = createTempRoot();
+    const aliasesFile = path.join(tempRoot, "aliases.sh");
+    const rawAliasesFile = path.join(tempRoot, "raw-aliases.sh");
+    const aliasesContent = fs.readFileSync(path.join(projectRoot, "aliases.sh"), "utf-8");
+    const fakeCurlRoot = createFakeCurl(tempRoot);
+
+    fs.writeFileSync(aliasesFile, aliasesContent, "utf8");
+    fs.writeFileSync(rawAliasesFile, "<!DOCTYPE html>\n<html></html>\n", "utf8");
+
+    const result = runUpdateAliasesProbe(aliasesFile, fakeCurlRoot, rawAliasesFile);
+
+    expect(result.status).toBe(1);
+    expect(stripTerminalClearSequences(result.stdout)).toBe("");
+    expect(result.stderr).toContain(
+      "updatealiases: downloaded file does not look like aliases.sh"
+    );
+    expect(fs.readFileSync(aliasesFile, "utf8")).toBe(aliasesContent);
+    expect(
+      fs
+        .readdirSync(tempRoot)
+        .filter((fileName) => fileName.includes(".download.") || fileName.includes(".backup."))
+    ).toEqual([]);
   });
 });

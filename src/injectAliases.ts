@@ -7,6 +7,7 @@ import type { Plugin } from "vite";
 
 export const ALIASES_PLACEHOLDER = "<!-- __ALIASES_CONTENT__ -->";
 export const HIGHLIGHT_THEME_PLACEHOLDER = "/* __INLINE_HLJS_THEME__ */";
+export const RAW_ALIASES_FILE_NAME = "raw";
 
 const require = createRequire(import.meta.url);
 const highlightThemePath = require.resolve("highlight.js/styles/a11y-dark.css");
@@ -41,6 +42,10 @@ export const renderAliasesBlock = (aliasesContent: string): string => {
   return `<pre><code class="hljs language-bash">${highlightAliasesContent(
     aliasesContent
   )}</code></pre>`;
+};
+
+export const renderRawAliasesAsset = (aliasesContent: string): string => {
+  return aliasesContent;
 };
 
 export const readHighlightThemeCss = (): string => {
@@ -80,6 +85,13 @@ export const createInjectAliasesPlugin = (rootDir: string): Plugin => {
     name: "inject-aliases",
     transformIndexHtml(html: string): string {
       return injectAliasesIntoHtml(html, readAliasesFile(rootDir));
+    },
+    generateBundle(): void {
+      this.emitFile({
+        type: "asset",
+        fileName: RAW_ALIASES_FILE_NAME,
+        source: renderRawAliasesAsset(readAliasesFile(rootDir)),
+      });
     },
   };
 };

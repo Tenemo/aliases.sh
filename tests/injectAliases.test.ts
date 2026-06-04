@@ -1,10 +1,37 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   ALIASES_PLACEHOLDER,
   HIGHLIGHT_THEME_PLACEHOLDER,
+  RAW_ALIASES_FILE_NAME,
+  createInjectAliasesPlugin,
   highlightAliasesContent,
   injectAliasesIntoHtml,
+  renderRawAliasesAsset,
 } from "../src/injectAliases";
+
+const temporaryRoots: string[] = [];
+
+afterEach(() => {
+  while (temporaryRoots.length > 0) {
+    const temporaryRoot = temporaryRoots.pop();
+
+    if (temporaryRoot) {
+      fs.rmSync(temporaryRoot, {
+        force: true,
+        recursive: true,
+      });
+    }
+  }
+});
+
+const createTemporaryRoot = (): string => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "raw-aliases-test-"));
+  temporaryRoots.push(temporaryRoot);
+  return temporaryRoot;
+};
 
 describe("injectAliasesIntoHtml", () => {
   it("injects highlighted aliases content and inline theme CSS into the page template", () => {
@@ -39,5 +66,54 @@ describe("highlightAliasesContent", () => {
 
     expect(highlighted).toContain("<span");
     expect(highlighted).toContain("&lt;done&gt;");
+  });
+});
+
+describe("raw aliases asset", () => {
+  it("keeps the raw aliases content unchanged", () => {
+    const aliasesContent = `# https://github.com/Tenemo/aliases.sh\nalias ll='ls -l'\n`;
+
+    expect(renderRawAliasesAsset(aliasesContent)).toBe(aliasesContent);
+  });
+
+  it("emits the raw aliases content at the extensionless raw path", () => {
+    const temporaryRoot = createTemporaryRoot();
+    const aliasesContent = `# https://github.com/Tenemo/aliases.sh\nalias ll='ls -l'\n`;
+    const emittedFiles: unknown[] = [];
+
+    fs.writeFileSync(path.join(temporaryRoot, "aliases.sh"), aliasesContent);
+
+    const plugin = createInjectAliasesPlugin(temporaryRoot);
+    const generateBundle = plugin.generateBundle;
+
+    expect(typeof generateBundle).toBe("function");
+    if (typeof generateBundle !== "function") {
+      throw new Error("Expected raw aliases plugin to define generateBundle.");
+    }
+
+    (
+      generateBundle as unknown as (
+        this: {
+          emitFile: (emittedFile: unknown) => string;
+        },
+        bundle: unknown,
+        writeBundle: boolean
+      ) => void
+    ).call(
+      {
+        emitFile(emittedFile: unknown): string {
+          emittedFiles.push(emittedFile);
+          return "raw-aliases";
+        },
+      },
+      {},
+      false
+    );
+
+    expect(emittedFiles).toContainEqual({
+      type: "asset",
+      fileName: RAW_ALIASES_FILE_NAME,
+      source: aliasesContent,
+    });
   });
 });

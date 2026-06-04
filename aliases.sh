@@ -48,6 +48,96 @@ __reload_aliases() {
 
 unalias reload 2>/dev/null
 alias reload='__reload_aliases'
+__update_aliases_from_live() {
+    local BACKUP_FILE
+    local BACKUP_STATUS
+    local DOWNLOAD_URL="https://aliases.sh/raw"
+    local DOWNLOAD_STATUS
+    local RELOAD_STATUS
+    local REPLACE_STATUS
+    local TARGET_FILE
+    local TARGET_REPLACED=0
+    local TEMPORARY_FILE
+
+    cleanup_update_aliases_from_live() {
+        if [ -n "${TEMPORARY_FILE:-}" ]; then
+            rm -f -- "$TEMPORARY_FILE"
+        fi
+        if [ -n "${BACKUP_FILE:-}" ]; then
+            rm -f -- "$BACKUP_FILE"
+        fi
+    }
+
+    restore_previous_aliases_file() {
+        local RESTORE_STATUS
+
+        RESTORE_STATUS="$1"
+        if [ "$TARGET_REPLACED" -eq 1 ] && [ -n "${BACKUP_FILE:-}" ] && [ -f "$BACKUP_FILE" ]; then
+            echo "updatealiases: update failed; restoring previous aliases file" >&2
+            mv -- "$BACKUP_FILE" "$TARGET_FILE" && source "$TARGET_FILE"
+        fi
+        cleanup_update_aliases_from_live
+        return "$RESTORE_STATUS"
+    }
+
+    TARGET_FILE="$(__aliases_source_file)" || return
+    if [ ! -f "$TARGET_FILE" ]; then
+        echo "updatealiases: aliases file not found: $TARGET_FILE" >&2
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "updatealiases: curl is required" >&2
+        return 1
+    fi
+
+    TEMPORARY_FILE="$(mktemp "${TARGET_FILE}.download.XXXXXX")" || return
+    BACKUP_FILE="$(mktemp "${TARGET_FILE}.backup.XXXXXX")" || {
+        rm -f -- "$TEMPORARY_FILE"
+        return 1
+    }
+
+    curl -fsSL "$DOWNLOAD_URL" -o "$TEMPORARY_FILE" || {
+        DOWNLOAD_STATUS=$?
+        cleanup_update_aliases_from_live
+        return "$DOWNLOAD_STATUS"
+    }
+    grep -q '^# https://github.com/Tenemo/aliases.sh' "$TEMPORARY_FILE" || {
+        echo "updatealiases: downloaded file does not look like aliases.sh" >&2
+        cleanup_update_aliases_from_live
+        return 1
+    }
+    grep -q '^__reload_aliases()' "$TEMPORARY_FILE" || {
+        echo "updatealiases: downloaded file does not define reload" >&2
+        cleanup_update_aliases_from_live
+        return 1
+    }
+    bash -n "$TEMPORARY_FILE" || {
+        echo "updatealiases: downloaded aliases file failed syntax validation" >&2
+        cleanup_update_aliases_from_live
+        return 1
+    }
+
+    cp -- "$TARGET_FILE" "$BACKUP_FILE" || {
+        BACKUP_STATUS=$?
+        cleanup_update_aliases_from_live
+        return "$BACKUP_STATUS"
+    }
+    mv -- "$TEMPORARY_FILE" "$TARGET_FILE" || {
+        REPLACE_STATUS=$?
+        cleanup_update_aliases_from_live
+        return "$REPLACE_STATUS"
+    }
+    TARGET_REPLACED=1
+    __reload_aliases
+    RELOAD_STATUS=$?
+    if [ "$RELOAD_STATUS" -ne 0 ]; then
+        restore_previous_aliases_file "$RELOAD_STATUS"
+        return "$?"
+    fi
+    cleanup_update_aliases_from_live
+}
+unalias updatealiases 2>/dev/null
+alias updatealiases='__update_aliases_from_live'
 
 # It's aliases all the way down.
 unalias aliases 2>/dev/null
@@ -290,24 +380,95 @@ alias gbrd='git branch -d'
 
 alias gdlc='git diff --cached HEAD^ -- ":(exclude)package-lock.json"'
 gdc() {
-    if [ -n "$1" ]; then
+    if [ -n "${1:-}" ]; then
         git diff "$1" --cached -- ":(exclude)package-lock.json"
     else
         git diff --cached -- ":(exclude)package-lock.json"
     fi
 }
-gdiff() {
-    if [ -n "$1" ]; then
-        git diff "$1" --word-diff -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
+__git_diff_with_untracked_files() (
+    local INDEX_FILE
+    local REPOSITORY_ROOT
+    local TEMPORARY_INDEX_DIRECTORY
+    local TEMPORARY_INDEX_DIRECTORY_CREATED=0
+    local TEMPORARY_INDEX_FILE
+    local UNTRACKED_FILE_OFFSET
+    local UNTRACKED_FILE_PATH
+    local -a UNTRACKED_FILE_BATCH
+    local -a UNTRACKED_FILE_PATHS=()
+
+    cleanup() {
+        if [ -n "${TEMPORARY_INDEX_FILE:-}" ]; then
+            rm -f -- "$TEMPORARY_INDEX_FILE"
+        fi
+        if [ "$TEMPORARY_INDEX_DIRECTORY_CREATED" = "1" ]; then
+            rmdir -- "$TEMPORARY_INDEX_DIRECTORY" 2>/dev/null || true
+        fi
+    }
+
+    trap cleanup EXIT
+
+    add_untracked_files_to_temporary_index() {
+        UNTRACKED_FILE_OFFSET=0
+
+        while [ "$UNTRACKED_FILE_OFFSET" -lt "${#UNTRACKED_FILE_PATHS[@]}" ]; do
+            UNTRACKED_FILE_BATCH=("${UNTRACKED_FILE_PATHS[@]:$UNTRACKED_FILE_OFFSET:100}")
+            GIT_INDEX_FILE="$TEMPORARY_INDEX_FILE" git -C "$REPOSITORY_ROOT" add -N -- "${UNTRACKED_FILE_BATCH[@]}" || return
+            UNTRACKED_FILE_OFFSET=$((UNTRACKED_FILE_OFFSET + 100))
+        done
+    }
+
+    REPOSITORY_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || return
+    INDEX_FILE="$(git rev-parse --git-path index)" || return
+    TEMPORARY_INDEX_DIRECTORY="$PWD/temp"
+
+    while IFS= read -r -d '' UNTRACKED_FILE_PATH; do
+        UNTRACKED_FILE_PATHS+=("$UNTRACKED_FILE_PATH")
+    done < <(
+        git -C "$REPOSITORY_ROOT" ls-files --others --exclude-standard -z -- \
+            ":(exclude)package-lock.json" \
+            ":(exclude)pnpm-lock.yaml"
+    ) || return
+
+    if [ "${#UNTRACKED_FILE_PATHS[@]}" -eq 0 ]; then
+        git diff "$@"
+        return
+    fi
+
+    if [ -e "$TEMPORARY_INDEX_DIRECTORY" ] && [ ! -d "$TEMPORARY_INDEX_DIRECTORY" ]; then
+        echo "__git_diff_with_untracked_files: temp path is not a directory: $TEMPORARY_INDEX_DIRECTORY" >&2
+        return 1
+    fi
+
+    if [ ! -d "$TEMPORARY_INDEX_DIRECTORY" ]; then
+        mkdir -p -- "$TEMPORARY_INDEX_DIRECTORY" || return
+        TEMPORARY_INDEX_DIRECTORY_CREATED=1
+    fi
+
+    TEMPORARY_INDEX_FILE="$(mktemp "$TEMPORARY_INDEX_DIRECTORY/gdiff-index.XXXXXX")" || return
+
+    if [ -f "$INDEX_FILE" ]; then
+        cp -- "$INDEX_FILE" "$TEMPORARY_INDEX_FILE" || return
     else
-        git diff --word-diff -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
+        rm -f -- "$TEMPORARY_INDEX_FILE" || return
+    fi
+
+    add_untracked_files_to_temporary_index || return
+
+    GIT_INDEX_FILE="$TEMPORARY_INDEX_FILE" git diff "$@"
+)
+gdiff() {
+    if [ -n "${1:-}" ]; then
+        __git_diff_with_untracked_files "$1" --word-diff -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
+    else
+        __git_diff_with_untracked_files --word-diff -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     fi
 }
 gdiffloc() {
-    if [ -n "$1" ]; then
-        git diff --shortstat "$1" -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
+    if [ -n "${1:-}" ]; then
+        __git_diff_with_untracked_files --shortstat "$1" -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     else
-        git diff --shortstat -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
+        __git_diff_with_untracked_files --shortstat -- ":(exclude)package-lock.json" ":(exclude)pnpm-lock.yaml"
     fi
 }
 

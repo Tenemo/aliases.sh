@@ -10,6 +10,7 @@ A tiny static site that publishes my curated bash aliases and renders the real [
 
 - `index.html` contains the site metadata directly and uses an explicit placeholder for the aliases code block.
 - `src/injectAliases.ts` inlines the Highlight.js theme and renders the real `aliases.sh` content at build/dev time.
+- The build also emits the real `aliases.sh` content at `/raw` for `updatealiases`.
 - The built site is static and does not include runtime browser JavaScript.
 - `concat` is a Bash wrapper over an inline Node engine at the end of `aliases.sh`.
 - `concat` supports `--exclude` with quoted `.gitignore`-like patterns, and one `--exclude` can take multiple patterns.
